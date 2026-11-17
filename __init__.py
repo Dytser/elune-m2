@@ -597,7 +597,22 @@ class EXPORT_SCENE_OT_wow_m2(Operator, ExportHelper):
 
                 phys_bytes = _build_phys_bytes(context, objects, self.mirror_x, self, model)
 
-                skin_ids = [self.skin_file_id] if self.skin_file_id else None
+                # The client finds a chunked model's skin through SFID, so a
+                # missing chunk means no skin and a crash on load. Fall back to
+                # the source model's first skin id, repeated for every LOD slot:
+                # our single .skin is the only one that matches the rebuilt
+                # vertex buffer, so every LOD must resolve to it (the source's
+                # lod01..06 skins index the original, larger vertex array).
+                skin_ids = None
+                if self.skin_file_id:
+                    skin_ids = [self.skin_file_id]
+                elif src_model is not None and src_model.skin_file_ids:
+                    skin_ids = [src_model.skin_file_ids[0]] * len(src_model.skin_file_ids)
+                    print("[M2] no Skin FileDataID set: reusing source SFID %d for %d LOD "
+                          "slot(s)" % (skin_ids[0], len(skin_ids)), flush=True)
+                else:
+                    print("[M2] WARNING: no SFID written (no Skin FileDataID and no source "
+                          "model): the client will have no skin to load", flush=True)
                 # One TXID entry per texture the materials resolved to, not just
                 # the fallback id: a multi-texture model needs them all.
                 tex_ids = [t.file_data_id for t in model.textures]
