@@ -15,6 +15,7 @@ from . import bone_names
 from . import coords
 from . import geoset_names
 from . import meta
+from . import textures
 from .anim_builder import BONE_LENGTH
 
 
@@ -135,6 +136,20 @@ def _stamp_material(mat, model, batch):
         _log("warning: could not sync panel props on %s: %r" % (mat.name, exc))
 
 
+def _texture_layers(model, batch):
+    """Per-layer texture description for :meth:`TextureContext.apply`."""
+    layers = []
+    for k, t in enumerate(_batch_textures(model, batch)):
+        ci = batch.texture_coord_combo + k
+        coord = (int(model.tex_coord_combos[ci])
+                 if 0 <= ci < len(model.tex_coord_combos) else k)
+        layers.append({
+            "filename": t.filename or "",
+            "fid": 0 if t.filename else int(t.file_data_id or 0),
+            "type": int(t.type), "flags": int(t.flags), "coord": coord})
+    return layers
+
+
 def _normalize_uv_tiles(uv_flat, faces, face_slot, slot_textures):
     """Shift every UV island by whole tiles onto the 0..1 grid.
 
@@ -198,7 +213,7 @@ def _normalize_uv_tiles(uv_flat, faces, face_slot, slot_textures):
 
 def _make_mesh_object(model, subs, name, mirror_x, batch_for_submesh,
                       arm_obj, collection, weld_seams=True, normalize_uvs=True,
-                      repair_weights=True):
+                      repair_weights=True, tex_ctx=None):
     """Build one mesh object from a list of (submesh_index, submesh) pairs."""
     skin = model.skin
     tri = skin.triangles
@@ -294,6 +309,14 @@ def _make_mesh_object(model, subs, name, mirror_x, batch_for_submesh,
         mat = bpy.data.materials.get(mat_name) or bpy.data.materials.new(mat_name)
         mat.use_nodes = True
         _stamp_material(mat, model, batch)
+        if tex_ctx is not None and batch is not None:
+            try:
+                mi = batch.material_index
+                blend = (int(model.materials[mi].blend_mode)
+                         if 0 <= mi < len(model.materials) else 0)
+                tex_ctx.apply(mat, _texture_layers(model, batch), blend)
+            except Exception as exc:  # noqa: BLE001 - textures are optional
+                _log("warning: textures failed on %s: %r" % (mat.name, exc))
         mesh.materials.append(mat)
     for poly, slot in zip(mesh.polygons, face_slot):
         poly.material_index = slot
@@ -618,7 +641,8 @@ def build(model, *, import_armature=True, mirror_x=False,
           import_attachments=True, import_cameras=True, fps=30, max_animations=0,
           collection=None, bone_tilt=0.0, weld_seams=True, import_bounds=True,
           normalize_uvs=True, repair_weights=True,
-          import_events=True, show_helpers=False):
+          import_events=True, show_helpers=False,
+          import_textures=True, texture_root="", listfile=""):
     """Create Blender objects from ``model``."""
     if collection is None:
         collection = bpy.context.scene.collection
@@ -653,6 +677,13 @@ def build(model, *, import_armature=True, mirror_x=False,
             wm.progress_end()
         return empty
 
+    tex_ctx = None
+    if import_textures:
+        tex_ctx = textures.TextureContext(
+            model.source_path, texture_root, listfile,
+            file_ids=[t.file_data_id for t in model.textures if not t.filename],
+            log=_log)
+
     arm_obj = None
     if import_armature:
         arm_obj = _build_armature(model, name, mirror_x, collection,
@@ -675,7 +706,7 @@ def build(model, *, import_armature=True, mirror_x=False,
             obj_name = "%s_%04d" % (lab or "Geoset", sub.skin_section_id)
             obj = _make_mesh_object(
                 model, [(si, sub)], obj_name, mirror_x,
-                batch_for_submesh, arm_obj, collection, weld_seams=weld_seams, normalize_uvs=normalize_uvs, repair_weights=repair_weights)
+                batch_for_submesh, arm_obj, collection, weld_seams=weld_seams, normalize_uvs=normalize_uvs, repair_weights=repair_weights, tex_ctx=tex_ctx)
             if obj is not None:
                 obj["m2_order"] = si                      # submesh index in skin
                 obj["m2_skin_section_id"] = sub.skin_section_id
@@ -691,11 +722,13 @@ def build(model, *, import_armature=True, mirror_x=False,
         _log("building merged mesh")
         obj = _make_mesh_object(
             model, list(enumerate(skin.submeshes)), name, mirror_x,
-            batch_for_submesh, arm_obj, collection, weld_seams=weld_seams, normalize_uvs=normalize_uvs, repair_weights=repair_weights)
+            batch_for_submesh, arm_obj, collection, weld_seams=weld_seams, normalize_uvs=normalize_uvs, repair_weights=repair_weights, tex_ctx=tex_ctx)
         if obj is not None:
             created.append(obj)
         _progress(60)
     _log("geometry done (%d objects)" % len(created))
+    if tex_ctx is not None:
+        _log(tex_ctx.summary())
     if split_geosets and created:
         _group_geosets(created, collection)
 

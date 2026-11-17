@@ -101,6 +101,25 @@ class IMPORT_SCENE_OT_wow_m2(Operator, ImportHelper):
                     "the camera looks",
         default=True,
     )
+    import_textures: BoolProperty(
+        name="Import Textures",
+        description="Find each material's texture next to the model (PNG/WebP "
+                    "first, else BLP converted to PNG) and add it to the material",
+        default=True,
+    )
+    texture_root: StringProperty(
+        name="Texture Folder",
+        description="Extra folder to search for textures, laid out like the game "
+                    "data (Character/NightElf/...). The model's own folder and its "
+                    "parents are always searched",
+        subtype="DIR_PATH", default="",
+    )
+    texture_listfile: StringProperty(
+        name="Listfile",
+        description="Optional community listfile (id;path) used to resolve "
+                    "FileDataID textures on retail models to paths",
+        subtype="FILE_PATH", default="",
+    )
     show_helpers: BoolProperty(
         name="Show Helpers",
         description="Keep the 'Helpers' collection (attachment and event empties, "
@@ -196,6 +215,10 @@ class IMPORT_SCENE_OT_wow_m2(Operator, ImportHelper):
         layout.prop(self, "import_bounds")
         layout.prop(self, "import_events")
         layout.prop(self, "show_helpers")
+        layout.prop(self, "import_textures")
+        if self.import_textures:
+            layout.prop(self, "texture_root")
+            layout.prop(self, "texture_listfile")
         col.prop(self, "bone_tilt")
         col.prop(self, "weld_seams")
         sub = col.column()
@@ -244,6 +267,9 @@ class IMPORT_SCENE_OT_wow_m2(Operator, ImportHelper):
                     import_bounds=self.import_bounds,
                     import_events=self.import_events,
                     show_helpers=self.show_helpers,
+                    import_textures=self.import_textures,
+                    texture_root=bpy.path.abspath(self.texture_root),
+                    listfile=bpy.path.abspath(self.texture_listfile),
                     normalize_uvs=self.normalize_uvs,
                     repair_weights=self.repair_weights,
                 )
