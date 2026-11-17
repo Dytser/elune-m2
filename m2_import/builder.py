@@ -543,6 +543,38 @@ def _group_geosets(objs, parent):
     _log("geosets: %d in Core Model, %d group collections" % (n_core, len(cols)))
 
 
+def _collect_helpers(parent, keep, show):
+    """Move every non-mesh helper (attachment/event empties, cameras and their
+    rigs, bounding boxes) into a "Helpers" collection, hidden unless ``show``."""
+    keep = {o for o in keep if o is not None}
+    moving = [o for o in parent.objects if o not in keep]
+    if not moving:
+        return None
+    helpers = bpy.data.collections.new("Helpers")
+    parent.children.link(helpers)
+    for o in moving:
+        helpers.objects.link(o)
+        parent.objects.unlink(o)
+    if not show:
+        # Eye icon (view layer) so it can be toggled back on in the outliner.
+        def find(lc):
+            if lc.collection is helpers:
+                return lc
+            for ch in lc.children:
+                r = find(ch)
+                if r is not None:
+                    return r
+            return None
+        lc = find(bpy.context.view_layer.layer_collection)
+        if lc is not None:
+            lc.hide_viewport = True
+        else:
+            helpers.hide_viewport = True
+    _log("helpers: %d object(s) in 'Helpers' (%s)"
+         % (len(moving), "shown" if show else "hidden"))
+    return helpers
+
+
 def _build_bounds_box(model, name, mirror_x, collection, kind="bounding"):
     """An editable wireframe box: the render bounds ("bounding") or the
     collision box ("collision"). The client frames the character and transmog
@@ -590,7 +622,7 @@ def build(model, *, import_armature=True, mirror_x=False,
           import_attachments=True, import_cameras=True, fps=30, max_animations=0,
           collection=None, bone_tilt=0.0, weld_seams=True, import_bounds=True,
           normalize_uvs=True, repair_weights=True,
-          import_events=True):
+          import_events=True, show_helpers=False):
     """Create Blender objects from ``model``."""
     if collection is None:
         collection = bpy.context.scene.collection
@@ -707,6 +739,8 @@ def build(model, *, import_armature=True, mirror_x=False,
             max_animations=max_animations, name=name)
     if arm_obj is not None:
         anim_builder.build_a_pose(arm_obj, _log)
+    _collect_helpers(collection, keep=[arm_obj, root] + created,
+                     show=show_helpers)
     _progress(95)
 
     # Preserve the tables export needs to reproduce the file exactly.

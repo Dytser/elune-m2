@@ -101,6 +101,13 @@ class IMPORT_SCENE_OT_wow_m2(Operator, ImportHelper):
                     "the camera looks",
         default=True,
     )
+    show_helpers: BoolProperty(
+        name="Show Helpers",
+        description="Keep the 'Helpers' collection (attachment and event empties, "
+                    "cameras, bounding boxes) visible after import. Off hides it; "
+                    "the eye icon in the outliner turns it back on",
+        default=False,
+    )
     import_events: BoolProperty(
         name="Import Events",
         description="Create an empty per M2 event ($SHR, $FL0, ...) parented to "
@@ -188,6 +195,7 @@ class IMPORT_SCENE_OT_wow_m2(Operator, ImportHelper):
         col.prop(self, "import_cameras")
         layout.prop(self, "import_bounds")
         layout.prop(self, "import_events")
+        layout.prop(self, "show_helpers")
         col.prop(self, "bone_tilt")
         col.prop(self, "weld_seams")
         sub = col.column()
@@ -235,6 +243,7 @@ class IMPORT_SCENE_OT_wow_m2(Operator, ImportHelper):
                     weld_seams=self.weld_seams,
                     import_bounds=self.import_bounds,
                     import_events=self.import_events,
+                    show_helpers=self.show_helpers,
                     normalize_uvs=self.normalize_uvs,
                     repair_weights=self.repair_weights,
                 )
