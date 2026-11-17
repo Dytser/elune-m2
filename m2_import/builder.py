@@ -639,6 +639,8 @@ def build(model, *, import_armature=True, mirror_x=False,
         anim_builder.build_animations(
             model, arm_obj, mirror_x, fps, _log,
             max_animations=max_animations, name=name)
+    if arm_obj is not None:
+        anim_builder.build_a_pose(arm_obj, _log)
     _progress(95)
 
     # Preserve the tables export needs to reproduce the file exactly.

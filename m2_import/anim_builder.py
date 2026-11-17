@@ -587,6 +587,44 @@ def build_animations(model, arm_obj, mirror_x, fps, log, max_animations=0, name=
     return made
 
 
+def build_a_pose(arm_obj, log, name="A Pose"):
+    """Create a one-keyframe rest-pose action and make it the active one.
+
+    Every bone is keyed at frame 0 with location 0, identity rotation and scale 1,
+    so the rig sits in its rest pose instead of playing the first M2 sequence.
+    It carries no ``m2_seq_*`` tags, so export ignores it.
+    """
+    if arm_obj is None:
+        return None
+    action = bpy.data.actions.new(name)
+    fcurves, slot = _new_action_channelbag(action)
+    ident = (
+        ("location", 3, (0.0, 0.0, 0.0)),
+        ("rotation_quaternion", 4, (1.0, 0.0, 0.0, 0.0)),
+        ("scale", 3, (1.0, 1.0, 1.0)),
+    )
+    for pb in arm_obj.pose.bones:
+        pb.rotation_mode = "QUATERNION"
+        path = 'pose.bones["%s"].' % pb.name
+        for prop, n_comp, val in ident:
+            _add_channel(fcurves, path + prop, n_comp, [(0.0, val)],
+                         lambda v: v, True)
+    action.use_fake_user = True
+    ad = arm_obj.animation_data_create()
+    ad.action = action
+    if slot is not None:
+        try:
+            ad.action_slot = slot
+        except Exception:  # noqa: BLE001
+            pass
+    scene = bpy.context.scene
+    scene.frame_start = 0
+    scene.frame_end = 1
+    scene.frame_set(0)
+    log("created rest-pose action '%s' (active)" % name)
+    return action
+
+
 def _build_global_sequences(bones, fcurves_factory, model_name, mirror_x, fps, log,
                             global_loops=(), rests=None):
     """Build one action per global sequence used by a bone track."""
