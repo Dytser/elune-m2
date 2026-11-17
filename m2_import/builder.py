@@ -483,6 +483,66 @@ def _build_armature(model, name, mirror_x, collection, bone_tilt=0.0):
     return arm_obj
 
 
+# Groups from here up are accessories (e.g. 3701, 3902) and never go in Core Model.
+CORE_MAX_GROUP = 32
+# Extra geosets that belong in Core Model although they are not a group's
+# default piece: 3202 is the second head mesh (3201/3202 = tongue + head).
+CORE_EXTRA_IDS = {3202}
+
+
+def _is_core(sid, group_lowest):
+    """Core Model = a group's default piece (its lowest id, if that is variant
+    0 or 1), for the character groups only, plus CORE_EXTRA_IDS."""
+    if sid in CORE_EXTRA_IDS:
+        return True
+    group = sid // 100
+    return (group <= CORE_MAX_GROUP and sid == group_lowest
+            and sid % 100 <= 1)
+
+
+def _group_geosets(objs, parent):
+    """Sort geoset meshes into sub-collections.
+
+    Geoset id = group * 100 + variant. Default pieces (see ``_is_core``) go in
+    "Core Model"; every other mesh goes in "Geoset_<group>". Only collection
+    membership changes, so parenting is untouched.
+    """
+    groups = {}
+    is_char = geoset_names.is_character(
+        [int(o.get("m2_skin_section_id", 0)) for o in objs])
+    for o in objs:
+        sid = int(o.get("m2_skin_section_id", 0))
+        groups.setdefault(sid // 100, []).append((sid, o))
+
+    def sub(name):
+        c = bpy.data.collections.new(name)
+        parent.children.link(c)
+        return c
+
+    def group_name(g):
+        lab = geoset_names.GROUP_NAMES.get(g, "") if is_char else ""
+        return "%s (%02d)" % (lab, g) if lab else "Geoset_%02d" % g
+
+    core = None
+    cols = {}
+    n_core = 0
+    for g in sorted(groups):
+        members = groups[g]
+        lowest = min(sid for sid, _ in members)
+        for sid, o in members:
+            if _is_core(sid, lowest):
+                core = core or sub("Core Model")
+                target = core
+                n_core += 1
+            else:
+                target = cols.get(g) or cols.setdefault(g, sub(group_name(g)))
+            target.objects.link(o)
+            for c in list(o.users_collection):
+                if c is not target:
+                    c.objects.unlink(o)
+    _log("geosets: %d in Core Model, %d group collections" % (n_core, len(cols)))
+
+
 def _build_bounds_box(model, name, mirror_x, collection, kind="bounding"):
     """An editable wireframe box: the render bounds ("bounding") or the
     collision box ("collision"). The client frames the character and transmog
@@ -608,6 +668,8 @@ def build(model, *, import_armature=True, mirror_x=False,
             created.append(obj)
         _progress(60)
     _log("geometry done (%d objects)" % len(created))
+    if split_geosets and created:
+        _group_geosets(created, collection)
 
     # Group the parts so they move/select together.
     root = arm_obj
