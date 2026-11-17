@@ -23,7 +23,18 @@ def _conv_quat(q, mirror_x):
     return (w, x, y, z)
 
 
+_BONE_NAMES = []
+
+
+def set_bone_names(names):
+    """Names the armature builder gave the bones (index -> Blender name)."""
+    global _BONE_NAMES
+    _BONE_NAMES = list(names)
+
+
 def bone_name(index):
+    if 0 <= index < len(_BONE_NAMES):
+        return _BONE_NAMES[index]
     return "bone_%03d" % index
 
 

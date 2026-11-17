@@ -29,6 +29,7 @@ from .model import (
     M2Sequence, M2Attachment, M2AnimTrack, M2SkinProfile, M2SubMesh, M2Batch,
 )
 from . import anim_data
+from . import bone_names
 from .anim_builder import BONE_LENGTH
 
 
@@ -74,14 +75,15 @@ def read_vertex_updates(objects, mirror_x=False):
     return updates
 
 
+_NAME_TO_INDEX = {}
+
+
 def _bone_index(name):
-    """'bone_007' -> 7, or None."""
-    if name.startswith("bone_"):
-        try:
-            return int(name[5:])
-        except ValueError:
-            return None
-    return None
+    """Bone name -> M2 bone index (stamped m2_bone_index, else 'bone_007'), or None."""
+    i = _NAME_TO_INDEX.get(name)
+    if i is not None:
+        return i
+    return bone_names.bone_index(name)
 
 
 def _find_meta_root(objects):
@@ -211,6 +213,11 @@ def _read_bones(model, arm, meta):
     if arm is None:
         return
     data_bones = arm.data.bones
+    _NAME_TO_INDEX.clear()
+    for b in data_bones:
+        v = b.get(bone_names.INDEX_PROP)
+        if v is not None:
+            _NAME_TO_INDEX[b.name] = int(v)
     indexed = {}
     for b in data_bones:
         i = _bone_index(b.name)

@@ -27,6 +27,9 @@ def _topo_bones(arm_data):
     _num_re = _re.compile(r"bone_(\d+)")
 
     def _idx(b):
+        v = b.get("m2_bone_index")
+        if v is not None:
+            return (int(v), b.name)
         m = _num_re.match(b.name)
         return (int(m.group(1)) if m else 1 << 30, b.name)
 

@@ -11,6 +11,7 @@ from mathutils import Vector, Matrix
 
 from . import anim_builder
 from . import anim_data
+from . import bone_names
 from . import meta
 from .anim_builder import BONE_LENGTH
 
@@ -419,8 +420,9 @@ def _apply_skinning(model, mesh_obj, arm_obj, local_to_global, faces=None, repai
                 continue
             buckets.setdefault(bi, {}).setdefault(bw, []).append(local_idx)
 
+    bnames = bone_names.compute_bone_names(model)
     for bi in sorted(buckets):
-        vg = mesh_obj.vertex_groups.new(name="bone_%03d" % bi)
+        vg = mesh_obj.vertex_groups.new(name=bnames[bi])
         for bw, idxs in buckets[bi].items():
             vg.add(idxs, bw / 255.0, "REPLACE")
 
@@ -446,9 +448,11 @@ def _build_armature(model, name, mirror_x, collection, bone_tilt=0.0):
         direction = (Matrix.Rotation(math.radians(bone_tilt), 3, "Z")
                      @ direction).normalized()
 
+    bnames = bone_names.compute_bone_names(model)
+    anim_builder.set_bone_names(bnames)
     edit_bones = []
     for i, b in enumerate(model.bones):
-        eb = arm_data.edit_bones.new("bone_%03d" % i)
+        eb = arm_data.edit_bones.new(bnames[i])
         hx, hy, hz = _convert_pos(b.pivot, mirror_x)
         eb.head = (hx, hy, hz)
         eb.tail = (hx + direction.x * BONE_LENGTH,
@@ -465,9 +469,10 @@ def _build_armature(model, name, mirror_x, collection, bone_tilt=0.0):
 
     # Stash each bone's M2-only fields on the Bone itself (edit bones are gone
     for i, b in enumerate(model.bones):
-        db = arm_data.bones.get("bone_%03d" % i)
+        db = arm_data.bones.get(bnames[i])
         if db is None:
             continue
+        db[bone_names.INDEX_PROP] = i
         db["m2_key_bone_id"] = int(b.key_bone_id)
         db["m2_bone_flags"] = int(b.flags)
         db["m2_name_crc"] = str(getattr(b, "name_crc", 0) & 0xFFFFFFFF)
