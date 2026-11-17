@@ -4,6 +4,7 @@ import bpy
 from mathutils import Matrix, Vector, Quaternion
 
 from . import names
+from . import coords
 
 # Bone length used by the armature build. Attachment placement relies on it,
 # so it lives here and is imported by builder.py.
@@ -11,16 +12,12 @@ BONE_LENGTH = 0.1
 
 
 def _conv_pos(p, mirror_x):
-    x, y, z = p
-    return (-x, y, z) if mirror_x else (x, y, z)
+    return coords.pos(p, mirror_x)
 
 
 def _conv_quat(q, mirror_x):
     """M2 (x, y, z, w) -> Blender (w, x, y, z), mirroring across X if asked."""
-    x, y, z, w = q
-    if mirror_x:
-        return (w, x, -y, -z)
-    return (w, x, y, z)
+    return coords.quat(q, mirror_x)
 
 
 _BONE_NAMES = []

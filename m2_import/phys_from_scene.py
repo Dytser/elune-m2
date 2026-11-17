@@ -285,9 +285,8 @@ def build_phys_doc(context, armature_obj=None, mirror_x: bool = False,
         doc.joints.append(phys.Joint(index[a], index[b], phys_rig.joint_type_int(kind),
                                      jid, _hex(jp.unk_hex, 4)))
 
-    if mirror_x:
-        from . import phys_to_scene
-        phys_to_scene.mirror_doc(doc)
+    from . import phys_to_scene
+    phys_to_scene.convert_doc(doc, mirror_x, to_blender=False)
     return doc
 
 

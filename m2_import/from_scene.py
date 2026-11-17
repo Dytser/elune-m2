@@ -15,6 +15,7 @@ from .model import (
 from .scene_reader import geoset_id_from_name
 from . import names
 from . import anim_data
+from . import coords
 
 
 def _crc(name):
@@ -78,7 +79,7 @@ def _build_bones(model, arm, mirror_x):
     for i, db in enumerate(ordered):
         b = M2Bone()
         h = db.head_local                      # rest head in armature space
-        b.pivot = (-h.x, h.y, h.z) if mirror_x else (h.x, h.y, h.z)
+        b.pivot = coords.pos_inv(h, mirror_x)
         b.parent = idx[db.parent.name] if db.parent else -1
         # Prefer the real M2 fields stamped at import; a hand-built bone gets
         # sensible defaults instead.
@@ -196,21 +197,20 @@ def _bone_specs(db, mirror_x):
 
     if R is None:
         def loc(v):
-            return (-v[0], v[1], v[2]) if mirror_x else tuple(v)
+            return coords.pos_inv(v, mirror_x)
 
         def rot(v):
-            w, x, y, z = v
-            return (x, -y, -z, w) if mirror_x else (x, y, z, w)
+            return coords.quat_inv(tuple(v), mirror_x)
     else:
         Rinv = R.inverted()
 
         def loc(v):
             m = R @ Vector(v)
-            return (-m.x, m.y, m.z) if mirror_x else (m.x, m.y, m.z)
+            return coords.pos_inv(m, mirror_x)
 
         def rot(v):
             m = R @ Quaternion((v[0], v[1], v[2], v[3])) @ Rinv
-            return (m.x, -m.y, -m.z, m.w) if mirror_x else (m.x, m.y, m.z, m.w)
+            return coords.quat_inv((m.w, m.x, m.y, m.z), mirror_x)
 
     return (
         ("location", 3, (0.0, 0.0, 0.0), "translation", loc),
@@ -613,22 +613,15 @@ def bounds_override_from_objects(objects, mirror_x, prop="m2_bounding_box"):
     if box is None or not box.data.vertices:
         return None
     mw = box.matrix_world
-    pts = [mw @ v.co for v in box.data.vertices]
-    xs = [p.x for p in pts]; ys = [p.y for p in pts]; zs = [p.z for p in pts]
-
-    def wow(p):
-        return (-p[0], p[1], p[2]) if mirror_x else (p[0], p[1], p[2])
-
-    a = wow((min(xs), min(ys), min(zs)))
-    b = wow((max(xs), max(ys), max(zs)))
-    return ((min(a[0], b[0]), min(a[1], b[1]), min(a[2], b[2])),
-            (max(a[0], b[0]), max(a[1], b[1]), max(a[2], b[2])))
+    pts = [coords.pos_inv(mw @ v.co, mirror_x) for v in box.data.vertices]
+    xs = [p[0] for p in pts]; ys = [p[1] for p in pts]; zs = [p[2] for p in pts]
+    return ((min(xs), min(ys), min(zs)), (max(xs), max(ys), max(zs)))
 
 
 def _build_cameras(model, objects, mirror_x):
     """Build M2Cameras from the Blender camera objects in the scene."""
     def wow(v):
-        return (-v[0], v[1], v[2]) if mirror_x else (v[0], v[1], v[2])
+        return coords.pos_inv(v, mirror_x)
 
     cams = [o for o in objects if o.type == "CAMERA"]
     out = []
@@ -720,7 +713,7 @@ def _build_attachments(model, objects, arm, idx, mirror_x):
         att = M2Attachment()
         att.id = aid
         att.bone = bi if bi >= 0 else 0
-        att.position = ((-m.x, m.y, m.z) if mirror_x else (m.x, m.y, m.z))
+        att.position = coords.pos_inv(m, mirror_x)
         out.append(att)
 
     out.sort(key=lambda a: a.id)
@@ -804,10 +797,10 @@ def _build_events(model, objects, arm, mirror_x, source_model):
             empty_arm = arm.matrix_world.inverted() @ obj.matrix_world.translation
             local = pose_bone.matrix.inverted() @ empty_arm
             m = db.matrix_local @ local
-            pos = ((-m.x, m.y, m.z) if mirror_x else (m.x, m.y, m.z))
+            pos = coords.pos_inv(m, mirror_x)
         else:
             wp = obj.matrix_world.translation
-            pos = ((-wp.x, wp.y, wp.z) if mirror_x else (wp.x, wp.y, wp.z))
+            pos = coords.pos_inv(wp, mirror_x)
         ev.position = pos
         ev.timestamps = _fix_times(obj.get("m2_event_times"))
         out.append(ev)
@@ -1491,8 +1484,8 @@ def _build_mesh(model, objects, g2b, mirror_x, specs):
                 _cache[key] = l
                 co = mw @ mv.co
                 v = M2Vertex()
-                v.pos = (-co.x, co.y, co.z) if mirror_x else (co.x, co.y, co.z)
-                v.normal = (-nrm.x, nrm.y, nrm.z) if mirror_x else (nrm.x, nrm.y, nrm.z)
+                v.pos = coords.pos_inv(co, mirror_x)
+                v.normal = coords.pos_inv(nrm, mirror_x)
                 v.uv1 = uv
                 v.uv2 = uv2
                 v.bone_weights, v.bone_indices = _vertex_bones(mv, g2b_obj)

@@ -22,43 +22,57 @@ def _bone_names(arm_obj) -> List[str]:
     return [b.name for b in from_scene._topo_bones(arm_obj.data)]
 
 
-# --- X mirroring -----------------------------------------------------------
-# Import and export both support "Mirror X". Reflecting a rig is its own
-# inverse, so the same function serves both directions.
+# --- WoW space <-> Blender space ---------------------------------------------
+# Import rotates the whole rig into Blender space (see coords.py) and optionally
+# mirrors X first; export applies the inverse. C is a signed permutation, so its
+# inverse is its transpose.
 
-def _mv(v):
-    return (-v[0], v[1], v[2])
-
-
-def _mm(m):
-    # R' = M R M with M = diag(-1, 1, 1): flip the x component of every axis,
-    # then negate the X axis so the frame stays right-handed.
-    ax, ay, az = m[0:3], m[3:6], m[6:9]
-    return ((ax[0], -ax[1], -ax[2]) + (-ay[0], ay[1], ay[2]) + (-az[0], az[1], az[2])
-            + _mv(m[9:12]))
+def _conv_matrix(mirror_x: bool, to_blender: bool):
+    from mathutils import Matrix
+    from . import coords
+    M = Matrix(((-1.0 if mirror_x else 1.0, 0, 0), (0, 1, 0), (0, 0, 1)))
+    C = coords.rot3() @ M
+    return C if to_blender else C.transposed()
 
 
-def mirror_doc(doc: phys.PhysDoc) -> phys.PhysDoc:
+def _cv(v, C):
+    r = C @ Vector(v)
+    return (r.x, r.y, r.z)
+
+
+def _cm(m, C):
+    """12-float frame (3 axes + translation): F' = C F C^-1, t' = C t."""
+    from mathutils import Matrix
+    F = Matrix((m[0:3], m[3:6], m[6:9])).transposed()   # axes as columns
+    Fn = C @ F @ C.transposed()
+    cols = Fn.transposed()
+    return tuple(cols[0]) + tuple(cols[1]) + tuple(cols[2]) + _cv(m[9:12], C)
+
+
+def convert_doc(doc: phys.PhysDoc, mirror_x: bool = False,
+                to_blender: bool = True) -> phys.PhysDoc:
+    C = _conv_matrix(mirror_x, to_blender)
     for b in doc.bodies:
-        b.position = _mv(b.position)
+        b.position = _cv(b.position, C)
     for c in doc.capsules:
-        c.p1, c.p2 = _mv(c.p1), _mv(c.p2)
+        c.p1, c.p2 = _cv(c.p1, C), _cv(c.p2, C)
     for s in doc.spheres:
-        s.center = _mv(s.center)
+        s.center = _cv(s.center, C)
     for bx in doc.boxes:
-        bx.frame = _mm(bx.frame)
+        bx.frame = _cm(bx.frame, C)
     for group in (doc.weld_joints, doc.shoulder_joints,
                   doc.revolute_joints, doc.prismatic_joints):
         for j in group:
-            j.frame_a, j.frame_b = _mm(j.frame_a), _mm(j.frame_b)
+            j.frame_a, j.frame_b = _cm(j.frame_a, C), _cm(j.frame_b, C)
     for group in (doc.spherical_joints, doc.distance_joints):
         for j in group:
-            j.anchor_a, j.anchor_b = _mv(j.anchor_a), _mv(j.anchor_b)
-    # A reflection reverses the sense of rotation about Z.
-    for j in doc.shoulder_joints:
-        j.lower_twist, j.upper_twist = -j.upper_twist, -j.lower_twist
-    for j in doc.revolute_joints:
-        j.lower_angle, j.upper_angle = -j.upper_angle, -j.lower_angle
+            j.anchor_a, j.anchor_b = _cv(j.anchor_a, C), _cv(j.anchor_b, C)
+    if mirror_x:
+        # A reflection reverses the sense of rotation about Z.
+        for j in doc.shoulder_joints:
+            j.lower_twist, j.upper_twist = -j.upper_twist, -j.lower_twist
+        for j in doc.revolute_joints:
+            j.lower_angle, j.upper_angle = -j.upper_angle, -j.lower_angle
     return doc
 
 
@@ -236,8 +250,7 @@ def _fill_joint(props, doc: phys.PhysDoc, joint: phys.Joint):
 def build_rig(context, doc: phys.PhysDoc, arm_obj, model_name: str,
               mirror_x: bool = False):
     """Create the rig collection for ``doc`` on ``arm_obj``. Returns it."""
-    if mirror_x:
-        mirror_doc(doc)
+    convert_doc(doc, mirror_x, to_blender=True)
     phys_rig.ensure_world(context)
 
     old = phys_rig.find_rig(context, arm_obj)

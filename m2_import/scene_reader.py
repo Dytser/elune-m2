@@ -45,6 +45,7 @@ from .model import (
 )
 from . import anim_data
 from . import bone_names
+from . import coords
 from .anim_builder import BONE_LENGTH
 
 
@@ -73,15 +74,15 @@ def read_vertex_updates(objects, mirror_x=False):
         for vi, mv in enumerate(mesh.vertices):
             gidx = vidx[vi]
             co = mw @ mv.co
-            pos = (-co.x, co.y, co.z) if mirror_x else (co.x, co.y, co.z)
+            pos = coords.pos_inv(co, mirror_x)
             ln = vert_loop[vi]
             if corner_normals is not None and ln >= 0:
                 nv = nmat @ Vector(corner_normals[ln])
                 nv.normalize()
-                nrm = (-nv.x, nv.y, nv.z) if mirror_x else (nv.x, nv.y, nv.z)
+                nrm = coords.pos_inv(nv, mirror_x)
             else:
                 nv = nmat @ mv.normal
-                nrm = (nv.x, nv.y, nv.z)
+                nrm = coords.pos_inv(nv, mirror_x)
             uv = (0.0, 0.0)
             if uv_layer is not None and ln >= 0:
                 u, vv = uv_layer.data[ln].uv
@@ -248,7 +249,7 @@ def _read_bones(model, arm, meta):
         db = indexed.get(i)
         if db is not None:
             h = db.head_local
-            mb.pivot = (h.x, h.y, h.z)
+            mb.pivot = coords.pos_inv(h)
             parent = db.parent
             mb.parent = _bone_index(parent.name) if parent else -1
             if mb.parent is None:
@@ -264,15 +265,12 @@ def _read_bones(model, arm, meta):
 
 # ---------------------------------------------------------------------------
 def _conv_pos_inv(v, mirror_x):
-    return (-v[0], v[1], v[2]) if mirror_x else (v[0], v[1], v[2])
+    return coords.pos_inv(v, mirror_x)
 
 
 def _conv_quat_inv(wxyz, mirror_x):
     # Blender (w,x,y,z) -> M2 (x,y,z,w), undoing the X-mirror if applied.
-    w, x, y, z = wxyz
-    if mirror_x:
-        return (x, -y, -z, w)
-    return (x, y, z, w)
+    return coords.quat_inv(wxyz, mirror_x)
 
 
 def _read_animations(model, objects, nseq, fps, mirror_x):
@@ -475,7 +473,7 @@ def _read_geometry(model, objects, meta, mirror_x):
         for vi, mv in enumerate(mesh.vertices):
             co = mw @ mv.co
             v = M2Vertex()
-            v.pos = (co.x, co.y, co.z)
+            v.pos = coords.pos_inv(co)
             ln = vert_loop[vi]
             if uv_layer is not None and ln >= 0:
                 u, vv = uv_layer.data[ln].uv
@@ -486,10 +484,10 @@ def _read_geometry(model, objects, meta, mirror_x):
             if corner_normals is not None and ln >= 0:
                 n = nmat @ Vector(corner_normals[ln])
                 n.normalize()
-                v.normal = (n.x, n.y, n.z)
+                v.normal = coords.pos_inv(n)
             else:
                 n = nmat @ mv.normal
-                v.normal = (n.x, n.y, n.z)
+                v.normal = coords.pos_inv(n)
             v.bone_weights, v.bone_indices = _vertex_weights(mv, g2b)
             vertices.append(v)
             skin_verts.append(len(skin_verts))

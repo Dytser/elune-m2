@@ -12,6 +12,7 @@ from mathutils import Vector, Matrix
 from . import anim_builder
 from . import anim_data
 from . import bone_names
+from . import coords
 from . import geoset_names
 from . import meta
 from .anim_builder import BONE_LENGTH
@@ -31,10 +32,7 @@ def _log(msg):
 
 def _convert_pos(p, mirror_x):
     # WoW model space and Blender are both right-handed, Z-up, so positions
-    x, y, z = p
-    if mirror_x:
-        x = -x
-    return (x, y, z)
+    return coords.pos(p, mirror_x)
 
 
 # M2Texture.type. Anything non-zero is supplied by the client at runtime and
@@ -335,9 +333,7 @@ def _make_mesh_object(model, subs, name, mirror_x, batch_for_submesh,
     try:
         loop_normals = []
         for g in corner_globals:
-            nx, ny, nz = mverts[g].normal
-            if mirror_x:
-                nx = -nx
+            nx, ny, nz = coords.pos(mverts[g].normal, mirror_x)
             if nx == 0.0 and ny == 0.0 and nz == 0.0:
                 nz = 1.0
             loop_normals.append((nx, ny, nz))

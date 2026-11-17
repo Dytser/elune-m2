@@ -130,10 +130,10 @@ class IMPORT_SCENE_OT_wow_m2(Operator, ImportHelper):
     bone_tilt: bpy.props.FloatProperty(
         name="Bone Tilt (deg)",
         description="Rotate every bone's direction about Z by this many degrees "
-                    "so they fan outward from the model's front instead of all "
-                    "pointing +Y: much easier to see and click in the viewport. "
-                    "Animations are unaffected: tracks are rotated into bone "
-                    "space on import and back out on export. 0 = classic +Y",
+                    "so they fan outward instead of all pointing +Y: easier to "
+                    "see and click in the viewport. Animations are unaffected: "
+                    "tracks are rotated into bone space on import and back out "
+                    "on export. 0 = bones along +Y",
         default=0.0, min=-180.0, max=180.0,
     )
     weld_seams: BoolProperty(
