@@ -15,10 +15,25 @@ from . import meta as meta_mod
 _GEOSET_NAME_RE = re.compile(r"geoset[_-]?(\d+)", re.IGNORECASE)
 
 
+# Short form used by the importer: "Boots_0501" (".001" suffix ignored).
+_SHORT_NAME_RE = re.compile(r"[A-Za-z]_(\d{4,})(?:\.\d+)?$")
+_REPL_LONG_RE = re.compile(r"^(.*?geoset[_-]?)(\d+)(\.\d+)?$", re.IGNORECASE)
+_REPL_SHORT_RE = re.compile(r"^(.*[A-Za-z]_)(\d{4,})(\.\d+)?$")
+
+
 def geoset_id_from_name(name):
-    """'nightelffemale_hd_geoset_3202' -> 3202, or None."""
-    m = _GEOSET_NAME_RE.search(name or "")
+    """'Boots_0501' / 'x_geoset_3202' -> the id, or None."""
+    m = _GEOSET_NAME_RE.search(name or "") or _SHORT_NAME_RE.search(name or "")
     return int(m.group(1)) if m else None
+
+
+def name_with_geoset_id(name, sid):
+    """``name`` with its embedded geoset id replaced by ``sid``, else None."""
+    for rx in (_REPL_LONG_RE, _REPL_SHORT_RE):
+        m = rx.match(name or "")
+        if m:
+            return "%s%04d%s" % (m.group(1), sid, m.group(3) or "")
+    return None
 
 
 # Back-compat alias; from_scene imports the public name.

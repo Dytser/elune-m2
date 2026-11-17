@@ -295,10 +295,10 @@ def _apply_geoset_to_active(scene):
     obj["m2_geoset_group"] = grp
     obj["m2_geoset_variant"] = var
     # Rename if the object matches our _geoset_NNNN pattern.
-    import re as _re
-    m = _re.match(r"(.*?)_geoset_\d+(\.\d+)?$", obj.name)
-    if m:
-        obj.name = "%s_geoset_%04d%s" % (m.group(1), sid, m.group(2) or "")
+    from .scene_reader import name_with_geoset_id
+    new = name_with_geoset_id(obj.name, sid)
+    if new:
+        obj.name = new
 
 
 def _on_geoset_prop_update(self, context):
@@ -388,9 +388,13 @@ class M2_OT_apply_geoset(Operator):
             self.report({"ERROR"}, "Select one or more mesh objects.")
             return {"CANCELLED"}
         for o in targets:
-            m = self._RE.match(o.name)
-            base = (m.group(1) if m else o.name).rstrip("._") or "mesh"
-            o.name = "%s_geoset_%04d" % (base, gid)
+            from .scene_reader import name_with_geoset_id
+            new = name_with_geoset_id(o.name, gid)
+            if new is None:
+                m = self._RE.match(o.name)
+                base = (m.group(1) if m else o.name).rstrip("._") or "mesh"
+                new = "%s_geoset_%04d" % (base, gid)
+            o.name = new
             o["m2_skin_section_id"] = gid
         self.report({"INFO"}, "Set %d object(s) to geoset %d." % (len(targets), gid))
         return {"FINISHED"}
@@ -1064,10 +1068,10 @@ class M2_OT_sync_geoset_id_from_group_var(Operator):
         sid = grp * 100 + var
         active["m2_skin_section_id"] = sid
         # Also rename to match the new id if the name matches our pattern.
-        import re as _re
-        m = _re.match(r"(.*?)_geoset_\d+(\.\d+)?$", active.name)
-        if m:
-            active.name = "%s_geoset_%04d%s" % (m.group(1), sid, m.group(2) or "")
+        from .scene_reader import name_with_geoset_id
+        new = name_with_geoset_id(active.name, sid)
+        if new:
+            active.name = new
         self.report({"INFO"}, "Set ID = %d (%d*100+%d)" % (sid, grp, var))
         return {"FINISHED"}
 

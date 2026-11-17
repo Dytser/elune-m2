@@ -12,6 +12,7 @@ from mathutils import Vector, Matrix
 from . import anim_builder
 from . import anim_data
 from . import bone_names
+from . import geoset_names
 from . import meta
 from .anim_builder import BONE_LENGTH
 
@@ -579,8 +580,11 @@ def build(model, *, import_armature=True, mirror_x=False,
     if split_geosets:
         n = len(skin.submeshes)
         _log("building %d geosets" % n)
+        is_char = geoset_names.is_character(
+            [sm.skin_section_id for sm in skin.submeshes])
         for si, sub in enumerate(skin.submeshes):
-            obj_name = "%s_geoset_%04d" % (name, sub.skin_section_id)
+            lab = geoset_names.label(sub.skin_section_id) if is_char else ""
+            obj_name = "%s_%04d" % (lab or "Geoset", sub.skin_section_id)
             obj = _make_mesh_object(
                 model, [(si, sub)], obj_name, mirror_x,
                 batch_for_submesh, arm_obj, collection, weld_seams=weld_seams, normalize_uvs=normalize_uvs, repair_weights=repair_weights)
