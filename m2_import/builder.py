@@ -417,7 +417,7 @@ def _apply_skinning(model, mesh_obj, arm_obj, local_to_global, faces=None, repai
                 continue
             buckets.setdefault(bi, {}).setdefault(bw, []).append(local_idx)
 
-    bnames = bone_names.compute_bone_names(model)
+    bnames = getattr(model, "bone_names", None) or bone_names.compute_bone_names(model)
     for bi in sorted(buckets):
         vg = mesh_obj.vertex_groups.new(name=bnames[bi])
         for bw, idxs in buckets[bi].items():
@@ -445,7 +445,9 @@ def _build_armature(model, name, mirror_x, collection, bone_tilt=0.0):
         direction = (Matrix.Rotation(math.radians(bone_tilt), 3, "Z")
                      @ direction).normalized()
 
-    bnames = bone_names.compute_bone_names(model)
+    bnames = getattr(model, "bone_names", None) or bone_names.compute_bone_names(model)
+    inferred = getattr(model, "bone_names_inferred", None) or set()
+    orig_names = getattr(model, "bone_names_orig", None) or {}
     anim_builder.set_bone_names(bnames)
     edit_bones = []
     for i, b in enumerate(model.bones):
@@ -474,6 +476,12 @@ def _build_armature(model, name, mirror_x, collection, bone_tilt=0.0):
         db["m2_bone_flags"] = int(b.flags)
         db["m2_name_crc"] = str(getattr(b, "name_crc", 0) & 0xFFFFFFFF)
         db["m2_submesh_id"] = int(getattr(b, "submesh_id", 0))
+        if i in orig_names:
+            db["m2_orig_name"] = orig_names[i]      # name before normalizing
+        if i in inferred:
+            # Guessed name; m2_key_bone_id above stays the file's real value,
+            # so export never writes an inferred role back.
+            db["m2_name_inferred"] = 1
 
     _log("armature: %d bones" % len(edit_bones))
     return arm_obj
@@ -618,8 +626,17 @@ def build(model, *, import_armature=True, mirror_x=False,
           import_attachments=True, import_cameras=True, fps=30, max_animations=0,
           collection=None, bone_tilt=0.0, weld_seams=True, import_bounds=True,
           normalize_uvs=True, repair_weights=True,
-          import_events=True, show_helpers=False):
+          import_events=True, show_helpers=False, infer_bone_names=False):
     """Create Blender objects from ``model``."""
+    # One naming pass shared by the armature and the vertex groups.
+    (model.bone_names, model.bone_names_inferred,
+     model.bone_names_orig) = bone_names.compute_bone_names_ex(
+        model, infer=infer_bone_names, normalize=True)
+    if model.bone_names_inferred:
+        _log("inferred %d bone names" % len(model.bone_names_inferred))
+    if model.bone_names_orig:
+        _log("normalized %d body bone names (spine/neck/pelvis)"
+             % len(model.bone_names_orig))
     if collection is None:
         collection = bpy.context.scene.collection
 
