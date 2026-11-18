@@ -11,6 +11,7 @@ from mathutils import Vector, Matrix
 
 from . import anim_builder
 from . import anim_data
+from . import bone_groups
 from . import bone_names
 from . import coords
 from . import geoset_names
@@ -428,7 +429,8 @@ def _apply_skinning(model, mesh_obj, arm_obj, local_to_global, faces=None, repai
     mesh_obj.parent = arm_obj
 
 
-def _build_armature(model, name, mirror_x, collection, bone_tilt=0.0):
+def _build_armature(model, name, mirror_x, collection, bone_tilt=0.0,
+                    organize_bones=True):
     if not model.bones:
         return None
 
@@ -483,6 +485,20 @@ def _build_armature(model, name, mirror_x, collection, bone_tilt=0.0):
             # so export never writes an inferred role back.
             db["m2_name_inferred"] = 1
 
+    if organize_bones:
+        try:
+            membership = bone_groups.classify(model, bnames)
+            made = bone_groups.apply(arm_data, bnames, membership,
+                                     pose=arm_obj.pose)
+            model.hidden_bone_collections = [
+                p[-1] for p, c in made.items() if not c.is_visible]
+            _log("bone collections: %s" % ", ".join(
+                "%s=%d" % (p[-1], sum(1 for c in membership.values()
+                                       if bone_groups.PATHS[c[-1]] == p))
+                for p in made))
+        except Exception as e:  # noqa: BLE001 - never fail an import over this
+            _log("bone collections skipped: %s" % e)
+
     _log("armature: %d bones" % len(edit_bones))
     return arm_obj
 
@@ -504,7 +520,19 @@ def _is_core(sid, group_lowest):
             and sid % 100 <= 1)
 
 
-def _group_geosets(objs, parent):
+def _find_layer_collection(coll, lc=None):
+    """The view-layer entry (eye icon) for ``coll``, or None."""
+    lc = lc or bpy.context.view_layer.layer_collection
+    if lc.collection is coll:
+        return lc
+    for ch in lc.children:
+        r = _find_layer_collection(coll, ch)
+        if r is not None:
+            return r
+    return None
+
+
+def _group_geosets(objs, parent, hide=True):
     """Sort geoset meshes into sub-collections.
 
     Geoset id = group * 100 + variant. Default pieces (see ``_is_core``) go in
@@ -544,7 +572,20 @@ def _group_geosets(objs, parent):
             for c in list(o.users_collection):
                 if c is not target:
                     c.objects.unlink(o)
-    _log("geosets: %d in Core Model, %d group collections" % (n_core, len(cols)))
+    # Everything outside Core Model (accessory / variant geosets) starts hidden
+    # via the eye icon, so it can be turned back on in the outliner.
+    hidden = []
+    if hide:
+        for c in cols.values():
+            lc = _find_layer_collection(c)
+            if lc is not None:
+                lc.hide_viewport = True
+            else:
+                c.hide_viewport = True
+            hidden.append(c.name)
+    _log("geosets: %d in Core Model, %d group collections (%d hidden)"
+         % (n_core, len(cols), len(hidden)))
+    return hidden
 
 
 def _collect_helpers(parent, keep, show):
@@ -561,15 +602,7 @@ def _collect_helpers(parent, keep, show):
         parent.objects.unlink(o)
     if not show:
         # Eye icon (view layer) so it can be toggled back on in the outliner.
-        def find(lc):
-            if lc.collection is helpers:
-                return lc
-            for ch in lc.children:
-                r = find(ch)
-                if r is not None:
-                    return r
-            return None
-        lc = find(bpy.context.view_layer.layer_collection)
+        lc = _find_layer_collection(helpers)
         if lc is not None:
             lc.hide_viewport = True
         else:
@@ -626,8 +659,12 @@ def build(model, *, import_armature=True, mirror_x=False,
           import_attachments=True, import_cameras=True, fps=30, max_animations=0,
           collection=None, bone_tilt=0.0, weld_seams=True, import_bounds=True,
           normalize_uvs=True, repair_weights=True,
-          import_events=True, show_helpers=False, infer_bone_names=False):
+          import_events=True, show_helpers=False, infer_bone_names=False,
+          organize_bones=True, show_all_collections=False):
     """Create Blender objects from ``model``."""
+    # What this import left hidden (the operator reports it in a popup).
+    model.hidden_collections = []
+    model.hidden_bone_collections = []
     # One naming pass shared by the armature and the vertex groups.
     (model.bone_names, model.bone_names_inferred,
      model.bone_names_orig) = bone_names.compute_bone_names_ex(
@@ -673,7 +710,8 @@ def build(model, *, import_armature=True, mirror_x=False,
     arm_obj = None
     if import_armature:
         arm_obj = _build_armature(model, name, mirror_x, collection,
-                                  bone_tilt=bone_tilt)
+                                  bone_tilt=bone_tilt,
+                                  organize_bones=organize_bones)
     _progress(15)
 
     # First batch referencing each submesh decides its material.
@@ -714,7 +752,8 @@ def build(model, *, import_armature=True, mirror_x=False,
         _progress(60)
     _log("geometry done (%d objects)" % len(created))
     if split_geosets and created:
-        _group_geosets(created, collection)
+        model.hidden_collections += _group_geosets(
+            created, collection, hide=not show_all_collections)
 
     # Group the parts so they move/select together.
     root = arm_obj
@@ -752,8 +791,10 @@ def build(model, *, import_armature=True, mirror_x=False,
             max_animations=max_animations, name=name)
     if arm_obj is not None:
         anim_builder.build_a_pose(arm_obj, _log)
-    _collect_helpers(collection, keep=[arm_obj, root] + created,
-                     show=show_helpers)
+    show_h = show_helpers or show_all_collections
+    if _collect_helpers(collection, keep=[arm_obj, root] + created,
+                        show=show_h) is not None and not show_h:
+        model.hidden_collections.append("Helpers")
     _progress(95)
 
     # Preserve the tables export needs to reproduce the file exactly.

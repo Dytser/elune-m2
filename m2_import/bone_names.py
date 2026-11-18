@@ -38,15 +38,15 @@ KEY_BONE_NAMES = {
     46: "HeadTop1", 47: "HeadTop2",
     48: "UpperBodyParent", 49: "NeckParent", 50: "NeckChild1",
     51: "LowerBodyParent", 52: "Buckle", 53: "Chest", 54: "Main",
-    55: "Leg_R", 56: "Leg_L",
-    57: "Knee_R", 58: "Knee_L",
+    55: "Thigh_R", 56: "Thigh_L",
+    57: "Calf_R", 58: "Calf_L",
     59: "Foot_L", 60: "Foot_R",
     61: "Elbow_R", 62: "Elbow_L",
     63: "Elbow_child_L",
     64: "Hand_R", 65: "Hand_L",
     66: "Weapon_R", 67: "Weapon_L",
     68: "Wrist_child_L", 69: "Wrist_child_R",
-    70: "Knee_upper_R", 71: "Knee_upper_L",
+    70: "Knee_R", 71: "Knee_L",
     72: "Arm2_R", 73: "Arm2_L",
     74: "Elbow_upper_R", 75: "Elbow_upper_L",
     76: "Forearm_R", 77: "Forearm_L",
@@ -101,13 +101,80 @@ def compute_bone_names_ex(model, infer=False, normalize=False):
             print("[M2] bone name inference failed: %r" % (e,), flush=True)
             names = _real_names(model)
             inferred = set()
+        # A chain hanging off a thigh is the lower leg: Thigh_L_01 -> Calf_L,
+        # Thigh_L_02 -> Calf_L_02, ...
+        for i in sorted(inferred):
+            m = re.fullmatch(r"Thigh_([LR])_(\d+)", names[i])
+            if m:
+                k = int(m.group(2))
+                new = ("Calf_%s" % m.group(1) if k == 1
+                       else "Calf_%s_%02d" % (m.group(1), k))
+                if new not in names:
+                    names[i] = new
     if normalize:
         try:
             orig = _normalize_body(model, names, inferred)
         except Exception as e:  # noqa: BLE001
             print("[M2] bone name normalization failed: %r" % (e,), flush=True)
             orig = {}
+    if infer:
+        try:
+            _name_breasts(model, names, inferred)
+        except Exception as e:  # noqa: BLE001
+            print("[M2] breast bone naming failed: %r" % (e,), flush=True)
     return names, inferred, orig
+
+
+BREAST_FMT = "Breast_%s"
+
+
+def _name_breasts(model, names, inferred):
+    """A leaf L/R pair on the top spine bone, in front of it, is the breasts.
+
+    Runs after the spine is normalized so the parent is known as Spine_NN. Only
+    fires for exactly one such pair, and only on bones that are still unnamed or
+    carry a guessed chain name, never on names read from the file.
+    """
+    bones = model.bones
+    n = len(bones)
+    P, parent, _tol, partner = _mirror_partners(bones)
+    spines = [i for i in range(n) if re.fullmatch(r"Spine_\d+", names[i])]
+    if not spines:
+        return
+    top = max(spines, key=lambda i: P[i][2])
+    # Shoulder height: the highest shoulder/arm root. Breasts must sit below it
+    # (and above the lowest spine bone). No arm bones -> no reference -> skip.
+    arm_z = [P[i][2] for i in range(n)
+             if _split_side(names[i])[0] in ("Shoulder", "Arm", "UpArm")
+             and _split_side(names[i])[1]]
+    if not arm_z:
+        return
+    shoulder_z = max(arm_z)
+    floor_z = min(P[i][2] for i in spines)
+    has_child = {p for p in parent if p >= 0}
+    pairs = []
+    for i, j in partner.items():
+        if i > j or parent[i] != top or parent[j] != top:
+            continue
+        if i in has_child or j in has_child:
+            continue
+        guessed = lambda k: (k in inferred or _GENERIC_RE.fullmatch(names[k]))
+        if not (guessed(i) and guessed(j)):
+            continue
+        if P[i][0] < P[top][0] or P[j][0] < P[top][0]:
+            continue                      # behind the spine: not breasts
+        if not (floor_z < P[i][2] < shoulder_z and floor_z < P[j][2] < shoulder_z):
+            continue                      # not between the spine base and shoulders
+        pairs.append((i, j))
+    if len(pairs) != 1:
+        return
+    for k in pairs[0]:
+        side = "L" if P[k][1] > 0 else "R"      # +Y is the model's left
+        new = BREAST_FMT % side
+        if new in names:
+            return
+        names[k] = new
+        inferred.add(k)
 
 
 # Canonical body names, so meshes and weights port between models by name.
@@ -346,7 +413,7 @@ def _infer_names(model, names):
     found = bone_crc_names.recover(set(wanted.values()))
     for i, crc in wanted.items():
         if crc in found:
-            give(i, found[crc], force_unique=True)
+            give(i, _fix_leg_name(found[crc]), force_unique=True)
 
     # 1) Mirror of a real name: Arm_L is real, its partner becomes Arm_R.
     for i in range(n):
@@ -445,6 +512,17 @@ def _infer_names(model, names):
     return inferred
 
 
+# WoW's own names are misleading: its "Leg" is the thigh, its "Knee" is the calf
+# and its "Knee_upper" is the actual knee. Applied to names read from the CRC
+# table too (the key-bone table above already uses the corrected names).
+_LEG_RENAMES = {"Leg": "Thigh", "Knee": "Calf", "Knee_upper": "Knee"}
+
+
+def _fix_leg_name(name):
+    m = re.fullmatch(r"(Leg|Knee|Knee_upper)_([LR])", name)
+    return "%s_%s" % (_LEG_RENAMES[m.group(1)], m.group(2)) if m else name
+
+
 def _real_names(model):
     """Names stored in the file: key-bone tables first, then the name CRCs."""
     n = len(model.bones)
@@ -483,6 +561,7 @@ def _real_names(model):
         base = bone_crc_names.KNOWN.get(crc) if crc else None
         if not base:
             continue
+        base = _fix_leg_name(base)
         name, k = base, 2
         while name in taken:
             name = "%s_%d" % (base, k)
