@@ -68,6 +68,19 @@ class IMPORT_SCENE_OT_wow_m2(Operator, ImportHelper):
         description="Build an armature from the model's bones and skin the mesh to it",
         default=True,
     )
+    infer_bone_names: BoolProperty(
+        name="Infer Bone Names",
+        description="Name more bones than the file spells out. First tries "
+                    "to recover each bone's stored name CRC against a "
+                    "dictionary of common rig names (Wing1_L, Tail2, Hair1, "
+                    "...); then guesses mirrored left/right pairs and the "
+                    "spine leading up to them (HeadChain1_L_02: a chain off "
+                    "the head, role unknown). Unpaired bones "
+                    "keep their generic names. Names read from the file are "
+                    "never changed; recovered/guessed bones are tagged "
+                    "m2_name_inferred",
+        default=True,
+    )
     split_geosets: BoolProperty(
         name="Split Geosets",
         description="Import each geoset (submesh) as its own mesh object instead of one merged mesh",
@@ -186,6 +199,9 @@ class IMPORT_SCENE_OT_wow_m2(Operator, ImportHelper):
         layout = self.layout
         layout.prop(self, "expansion")
         layout.prop(self, "import_armature")
+        sub_inf = layout.column()
+        sub_inf.enabled = self.import_armature
+        sub_inf.prop(self, "infer_bone_names")
         layout.prop(self, "split_geosets")
 
         col = layout.column()
@@ -246,6 +262,7 @@ class IMPORT_SCENE_OT_wow_m2(Operator, ImportHelper):
                     show_helpers=self.show_helpers,
                     normalize_uvs=self.normalize_uvs,
                     repair_weights=self.repair_weights,
+                    infer_bone_names=self.infer_bone_names,
                 )
                 # Remember where this came from so export can re-read the M2
                 context.scene["m2_source_m2"] = path
@@ -566,6 +583,38 @@ class EXPORT_SCENE_OT_wow_m2(Operator, ExportHelper):
         return ""
 
     def execute(self, context):
+        result = self._do_export(context)
+        if "FINISHED" in result:
+            # After the success message so it is the last thing the user sees.
+            self._warn_orphan_weight_groups(context)
+        return result
+
+    def _warn_orphan_weight_groups(self, context):
+        from .m2_import import scene_reader
+        try:
+            objects = _model_objects(context.selected_objects if self.selected_only
+                                     else list(context.scene.objects))
+            groups, mesh_names = scene_reader.find_orphan_weight_groups(objects)
+        except Exception as exc:  # noqa: BLE001 - a check must never fail the export
+            print("[M2] orphan weight group check failed: %r" % (exc,), flush=True)
+            return
+        if not groups:
+            return
+        ranked = sorted(groups.items(), key=lambda kv: (-kv[1], kv[0]))
+        print("[M2] WARNING: %d weight group(s) are not bones of this model and "
+              "were NOT exported:" % len(ranked), flush=True)
+        for name, count in ranked:
+            print("[M2]   %-28s %d vertices" % (name, count), flush=True)
+        shown = ", ".join("%s (%d)" % kv for kv in ranked[:5])
+        more = " +%d more" % (len(ranked) - 5) if len(ranked) > 5 else ""
+        self.report(
+            {"WARNING"},
+            "%d weight group(s) on %d mesh(es) are not bones of this model and "
+            "were ignored, so those vertices lost that influence: %s%s. Merge "
+            "them into a bone the model has, then export again. Full list in "
+            "the System Console." % (len(ranked), len(mesh_names), shown, more))
+
+    def _do_export(self, context):
         from .m2_import import scene_reader, writer
         objects = _model_objects(context.selected_objects if self.selected_only
                                  else list(context.scene.objects))
