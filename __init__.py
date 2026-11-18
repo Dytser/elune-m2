@@ -68,6 +68,15 @@ class IMPORT_SCENE_OT_wow_m2(Operator, ImportHelper):
         description="Build an armature from the model's bones and skin the mesh to it",
         default=True,
     )
+    organize_bones: BoolProperty(
+        name="Organize Bone Collections",
+        description="Sort the bones into bone collections (Root, Spine, Arms > "
+                    "Hands, Head, Legs, Jiggle, Other > Attachment Points / Unclear) "
+                    "and hide the detail ones by default: hands and fingers, "
+                    "head bones, attachment points and everything unclear. "
+                    "Unhide them from the Bone Collections panel",
+        default=True,
+    )
     infer_bone_names: BoolProperty(
         name="Infer Bone Names",
         description="Name more bones than the file spells out. First tries "
@@ -119,6 +128,14 @@ class IMPORT_SCENE_OT_wow_m2(Operator, ImportHelper):
         description="Keep the 'Helpers' collection (attachment and event empties, "
                     "cameras, bounding boxes) visible after import. Off hides it; "
                     "the eye icon in the outliner turns it back on",
+        default=False,
+    )
+    show_all_collections: BoolProperty(
+        name="Show All Collections",
+        description="Leave every outliner collection visible after import. "
+                    "Off (default) hides the accessory/variant geoset collections "
+                    "(everything outside 'Core Model') and 'Helpers'; the eye icon "
+                    "turns each back on. Does not affect bone collections",
         default=False,
     )
     import_events: BoolProperty(
@@ -202,6 +219,7 @@ class IMPORT_SCENE_OT_wow_m2(Operator, ImportHelper):
         sub_inf = layout.column()
         sub_inf.enabled = self.import_armature
         sub_inf.prop(self, "infer_bone_names")
+        sub_inf.prop(self, "organize_bones")
         layout.prop(self, "split_geosets")
 
         col = layout.column()
@@ -211,7 +229,10 @@ class IMPORT_SCENE_OT_wow_m2(Operator, ImportHelper):
         col.prop(self, "import_cameras")
         layout.prop(self, "import_bounds")
         layout.prop(self, "import_events")
-        layout.prop(self, "show_helpers")
+        layout.prop(self, "show_all_collections")
+        sub_h = layout.column()
+        sub_h.enabled = not self.show_all_collections
+        sub_h.prop(self, "show_helpers")
         col.prop(self, "bone_tilt")
         col.prop(self, "weld_seams")
         sub = col.column()
@@ -240,6 +261,7 @@ class IMPORT_SCENE_OT_wow_m2(Operator, ImportHelper):
             return {"CANCELLED"}
 
         ok = 0
+        hidden_cols, hidden_bone_cols = [], []
         for path in paths:
             try:
                 print("[M2] loading %s" % path, flush=True)
@@ -263,7 +285,11 @@ class IMPORT_SCENE_OT_wow_m2(Operator, ImportHelper):
                     normalize_uvs=self.normalize_uvs,
                     repair_weights=self.repair_weights,
                     infer_bone_names=self.infer_bone_names,
+                    organize_bones=self.organize_bones,
+                    show_all_collections=self.show_all_collections,
                 )
+                hidden_cols += getattr(model, "hidden_collections", [])
+                hidden_bone_cols += getattr(model, "hidden_bone_collections", [])
                 # Remember where this came from so export can re-read the M2
                 context.scene["m2_source_m2"] = path
 
@@ -304,7 +330,31 @@ class IMPORT_SCENE_OT_wow_m2(Operator, ImportHelper):
                 self.report(
                     {"ERROR"}, f"Failed to import {os.path.basename(path)}: {exc}")
 
+        if ok and (hidden_cols or hidden_bone_cols):
+            _popup_hidden(context, hidden_cols, hidden_bone_cols)
         return {"FINISHED"} if ok else {"CANCELLED"}
+
+
+def _popup_hidden(context, cols, bone_cols):
+    """Small popup telling the user what the import left hidden."""
+    def _line(layout, label, names):
+        shown = ", ".join(names[:6]) + (" ..." if len(names) > 6 else "")
+        layout.label(text="%d %s hidden" % (len(names), label), icon="HIDE_ON")
+        layout.label(text="    " + shown)
+
+    def draw(self, _context):
+        if cols:
+            _line(self.layout, "collection(s)", cols)
+        if bone_cols:
+            _line(self.layout, "bone collection(s)", bone_cols)
+        self.layout.label(text="Re-import with 'Show All Collections' to show "
+                               "the outliner ones.")
+
+    try:
+        context.window_manager.popup_menu(
+            draw, title="Import: hidden collections", icon="INFO")
+    except Exception:  # noqa: BLE001 - headless / no window manager
+        pass
 
 
 def _validate_and_report(model, op):
