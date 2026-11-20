@@ -1,7 +1,7 @@
 schema_version = "1.0.0"
 
 id = "elune_m2"
-version = "1.9.1"
+version = "2.0.0"
 name = "Elune M2"
 tagline = "Import and re-export World of Warcraft M2 models with per-expansion parsers"
 maintainer = "Lila"

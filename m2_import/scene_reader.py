@@ -102,6 +102,45 @@ def _bone_index(name):
     return bone_names.bone_index(name)
 
 
+def find_orphan_weight_groups(objects):
+    """Vertex groups that carry weight but match no bone of the model.
+
+    Export drops any group whose name is not a bone of the armature the mesh is
+    bound to (typically weights ported from another model, e.g. a ``Pelvis``
+    group on a rig that has no such bone), so those vertices silently lose that
+    influence. Returns ``{group name: vertex count}`` plus the set of mesh
+    object names affected, as ``(groups, mesh_names)``; empty if nothing is
+    wrong or there is no armature to compare against.
+    """
+    from .from_scene import is_helper_box
+    armatures = [o for o in objects if o.type == "ARMATURE"]
+    meshes = [o for o in objects if o.type == "MESH" and not is_helper_box(o)]
+    for o in meshes:
+        for mod in o.modifiers:
+            if mod.type == "ARMATURE" and mod.object is not None \
+                    and mod.object not in armatures:
+                armatures.append(mod.object)
+    bone_set = {b.name for a in armatures for b in a.data.bones}
+    if not bone_set:
+        return {}, set()
+
+    groups, mesh_names = {}, set()
+    for obj in meshes:
+        orphan = {vg.index: vg.name for vg in obj.vertex_groups
+                  if vg.name not in bone_set}
+        if not orphan:
+            continue
+        counts = {}
+        for v in obj.data.vertices:
+            for g in v.groups:
+                if g.group in orphan and g.weight > 0.0:
+                    counts[g.group] = counts.get(g.group, 0) + 1
+        for gi, c in counts.items():
+            groups[orphan[gi]] = groups.get(orphan[gi], 0) + c
+            mesh_names.add(obj.name)
+    return groups, mesh_names
+
+
 def _find_meta_root(objects):
     for o in objects:
         if "m2_meta" in o.keys():

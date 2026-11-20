@@ -68,6 +68,28 @@ class IMPORT_SCENE_OT_wow_m2(Operator, ImportHelper):
         description="Build an armature from the model's bones and skin the mesh to it",
         default=True,
     )
+    organize_bones: BoolProperty(
+        name="Organize Bone Collections",
+        description="Sort the bones into bone collections (Root, Spine, Arms > "
+                    "Hands, Head, Legs, Jiggle, Other > Attachment Points / Unclear) "
+                    "and hide the detail ones by default: hands and fingers, "
+                    "head bones, attachment points and everything unclear. "
+                    "Unhide them from the Bone Collections panel",
+        default=True,
+    )
+    infer_bone_names: BoolProperty(
+        name="Infer Bone Names",
+        description="Name more bones than the file spells out. First tries "
+                    "to recover each bone's stored name CRC against a "
+                    "dictionary of common rig names (Wing1_L, Tail2, Hair1, "
+                    "...); then guesses mirrored left/right pairs and the "
+                    "spine leading up to them (HeadChain1_L_02: a chain off "
+                    "the head, role unknown). Unpaired bones "
+                    "keep their generic names. Names read from the file are "
+                    "never changed; recovered/guessed bones are tagged "
+                    "m2_name_inferred",
+        default=True,
+    )
     split_geosets: BoolProperty(
         name="Split Geosets",
         description="Import each geoset (submesh) as its own mesh object instead of one merged mesh",
@@ -125,6 +147,14 @@ class IMPORT_SCENE_OT_wow_m2(Operator, ImportHelper):
         description="Keep the 'Helpers' collection (attachment and event empties, "
                     "cameras, bounding boxes) visible after import. Off hides it; "
                     "the eye icon in the outliner turns it back on",
+        default=False,
+    )
+    show_all_collections: BoolProperty(
+        name="Show All Collections",
+        description="Leave every outliner collection visible after import. "
+                    "Off (default) hides the accessory/variant geoset collections "
+                    "(everything outside 'Core Model') and 'Helpers'; the eye icon "
+                    "turns each back on. Does not affect bone collections",
         default=False,
     )
     import_events: BoolProperty(
@@ -205,6 +235,10 @@ class IMPORT_SCENE_OT_wow_m2(Operator, ImportHelper):
         layout = self.layout
         layout.prop(self, "expansion")
         layout.prop(self, "import_armature")
+        sub_inf = layout.column()
+        sub_inf.enabled = self.import_armature
+        sub_inf.prop(self, "infer_bone_names")
+        sub_inf.prop(self, "organize_bones")
         layout.prop(self, "split_geosets")
 
         col = layout.column()
@@ -214,7 +248,10 @@ class IMPORT_SCENE_OT_wow_m2(Operator, ImportHelper):
         col.prop(self, "import_cameras")
         layout.prop(self, "import_bounds")
         layout.prop(self, "import_events")
-        layout.prop(self, "show_helpers")
+        layout.prop(self, "show_all_collections")
+        sub_h = layout.column()
+        sub_h.enabled = not self.show_all_collections
+        sub_h.prop(self, "show_helpers")
         layout.prop(self, "import_textures")
         if self.import_textures:
             layout.prop(self, "texture_root")
@@ -247,6 +284,7 @@ class IMPORT_SCENE_OT_wow_m2(Operator, ImportHelper):
             return {"CANCELLED"}
 
         ok = 0
+        hidden_cols, hidden_bone_cols = [], []
         for path in paths:
             try:
                 print("[M2] loading %s" % path, flush=True)
@@ -272,7 +310,12 @@ class IMPORT_SCENE_OT_wow_m2(Operator, ImportHelper):
                     listfile=bpy.path.abspath(self.texture_listfile),
                     normalize_uvs=self.normalize_uvs,
                     repair_weights=self.repair_weights,
+                    infer_bone_names=self.infer_bone_names,
+                    organize_bones=self.organize_bones,
+                    show_all_collections=self.show_all_collections,
                 )
+                hidden_cols += getattr(model, "hidden_collections", [])
+                hidden_bone_cols += getattr(model, "hidden_bone_collections", [])
                 # Remember where this came from so export can re-read the M2
                 context.scene["m2_source_m2"] = path
 
@@ -313,7 +356,31 @@ class IMPORT_SCENE_OT_wow_m2(Operator, ImportHelper):
                 self.report(
                     {"ERROR"}, f"Failed to import {os.path.basename(path)}: {exc}")
 
+        if ok and (hidden_cols or hidden_bone_cols):
+            _popup_hidden(context, hidden_cols, hidden_bone_cols)
         return {"FINISHED"} if ok else {"CANCELLED"}
+
+
+def _popup_hidden(context, cols, bone_cols):
+    """Small popup telling the user what the import left hidden."""
+    def _line(layout, label, names):
+        shown = ", ".join(names[:6]) + (" ..." if len(names) > 6 else "")
+        layout.label(text="%d %s hidden" % (len(names), label), icon="HIDE_ON")
+        layout.label(text="    " + shown)
+
+    def draw(self, _context):
+        if cols:
+            _line(self.layout, "collection(s)", cols)
+        if bone_cols:
+            _line(self.layout, "bone collection(s)", bone_cols)
+        self.layout.label(text="Re-import with 'Show All Collections' to show "
+                               "the outliner ones.")
+
+    try:
+        context.window_manager.popup_menu(
+            draw, title="Import: hidden collections", icon="INFO")
+    except Exception:  # noqa: BLE001 - headless / no window manager
+        pass
 
 
 def _validate_and_report(model, op):
@@ -592,6 +659,38 @@ class EXPORT_SCENE_OT_wow_m2(Operator, ExportHelper):
         return ""
 
     def execute(self, context):
+        result = self._do_export(context)
+        if "FINISHED" in result:
+            # After the success message so it is the last thing the user sees.
+            self._warn_orphan_weight_groups(context)
+        return result
+
+    def _warn_orphan_weight_groups(self, context):
+        from .m2_import import scene_reader
+        try:
+            objects = _model_objects(context.selected_objects if self.selected_only
+                                     else list(context.scene.objects))
+            groups, mesh_names = scene_reader.find_orphan_weight_groups(objects)
+        except Exception as exc:  # noqa: BLE001 - a check must never fail the export
+            print("[M2] orphan weight group check failed: %r" % (exc,), flush=True)
+            return
+        if not groups:
+            return
+        ranked = sorted(groups.items(), key=lambda kv: (-kv[1], kv[0]))
+        print("[M2] WARNING: %d weight group(s) are not bones of this model and "
+              "were NOT exported:" % len(ranked), flush=True)
+        for name, count in ranked:
+            print("[M2]   %-28s %d vertices" % (name, count), flush=True)
+        shown = ", ".join("%s (%d)" % kv for kv in ranked[:5])
+        more = " +%d more" % (len(ranked) - 5) if len(ranked) > 5 else ""
+        self.report(
+            {"WARNING"},
+            "%d weight group(s) on %d mesh(es) are not bones of this model and "
+            "were ignored, so those vertices lost that influence: %s%s. Merge "
+            "them into a bone the model has, then export again. Full list in "
+            "the System Console." % (len(ranked), len(mesh_names), shown, more))
+
+    def _do_export(self, context):
         from .m2_import import scene_reader, writer
         objects = _model_objects(context.selected_objects if self.selected_only
                                  else list(context.scene.objects))
@@ -623,7 +722,22 @@ class EXPORT_SCENE_OT_wow_m2(Operator, ExportHelper):
 
                 phys_bytes = _build_phys_bytes(context, objects, self.mirror_x, self, model)
 
-                skin_ids = [self.skin_file_id] if self.skin_file_id else None
+                # The client finds a chunked model's skin through SFID, so a
+                # missing chunk means no skin and a crash on load. Fall back to
+                # the source model's first skin id, repeated for every LOD slot:
+                # our single .skin is the only one that matches the rebuilt
+                # vertex buffer, so every LOD must resolve to it (the source's
+                # lod01..06 skins index the original, larger vertex array).
+                skin_ids = None
+                if self.skin_file_id:
+                    skin_ids = [self.skin_file_id]
+                elif src_model is not None and src_model.skin_file_ids:
+                    skin_ids = [src_model.skin_file_ids[0]] * len(src_model.skin_file_ids)
+                    print("[M2] no Skin FileDataID set: reusing source SFID %d for %d LOD "
+                          "slot(s)" % (skin_ids[0], len(skin_ids)), flush=True)
+                else:
+                    print("[M2] WARNING: no SFID written (no Skin FileDataID and no source "
+                          "model): the client will have no skin to load", flush=True)
                 # One TXID entry per texture the materials resolved to, not just
                 # the fallback id: a multi-texture model needs them all.
                 tex_ids = [t.file_data_id for t in model.textures]
