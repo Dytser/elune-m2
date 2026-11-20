@@ -16,6 +16,7 @@ from . import m2_import
 from .m2_import import versions, builder
 from .m2_import import m2_ui
 from .m2_import import m2_physics_ui
+from .m2_import import outfit_ui
 
 
 def _copy_base_skins(base_m2, out_m2):
@@ -963,9 +964,11 @@ def register():
     bpy.types.TOPBAR_MT_file_export.append(_menu_func_export)
     m2_ui.register()
     m2_physics_ui.register()
+    outfit_ui.register()
 
 
 def unregister():
+    outfit_ui.unregister()
     m2_physics_ui.unregister()
     m2_ui.unregister()
     bpy.types.TOPBAR_MT_file_export.remove(_menu_func_export)
