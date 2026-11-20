@@ -1,4 +1,4 @@
-"""Outfit Textures panel: merge armour components into one paintable atlas and split it back out."""
+"""Outfit Textures panel: pick armor (Type > Armor > Colour), merge it into one paintable atlas, split it back out."""
 
 import os
 
@@ -7,7 +7,7 @@ import numpy as np
 from bpy.props import (BoolProperty, EnumProperty, PointerProperty, StringProperty)
 from bpy.types import Operator, Panel, PropertyGroup
 
-from . import outfit
+from . import outfit, outfit_index
 
 ATLAS_NAME = "M2_Outfit_Atlas"
 ATLAS_FILE = "outfit_atlas.png"
@@ -17,6 +17,112 @@ def _abs(path):
     return bpy.path.abspath(path) if path else ""
 
 
+# ---------------------------------------------------------------------------
+# Armor browser: Type -> Armor -> Colour
+# ---------------------------------------------------------------------------
+_items = {}     # enum item lists must stay referenced or Blender shows garbage
+_busy = [False]
+
+
+def _on_path(self, context):
+    outfit.clear_cache()
+    outfit_index.clear_cache()
+    _items.clear()
+
+
+def _index(p):
+    root = _abs(p.components_path)
+    return outfit_index.get_index(root) if os.path.isdir(root) else None
+
+
+def _cached(key, build):
+    if key not in _items:
+        _items[key] = build()
+    return _items[key]
+
+
+def _type_items(self, context):
+    root = _abs(self.components_path)
+
+    def build():
+        idx = _index(self)
+        items = [(k, label, tip) for k, label, tip in idx.types()] if idx else []
+        return items or [("NONE", "Set the Components folder", "")]
+    return _cached(("type", root), build)
+
+
+def _armor_items(self, context):
+    root, kind = _abs(self.components_path), self.armor_type
+
+    def build():
+        idx = _index(self)
+        out = []
+        for key, label in (idx.armors(kind) if idx else []):
+            n = len(idx.colors(kind, key))
+            out.append((key, "%s  (%d colours)" % (label, n) if n > 1 else label, key))
+        return out or [("NONE", "(none)", "")]
+    return _cached(("armor", root, kind), build)
+
+
+def _color_items(self, context):
+    root, kind, key = _abs(self.components_path), self.armor_type, self.armor
+
+    def build():
+        idx = _index(self)
+        out = [(c or outfit_index.DEFAULT_COLOR,
+                c.replace("_", " ").title() if c else "Default", "")
+               for c in (idx.colors(kind, key) if idx else [])]
+        return out or [("NONE", "(none)", "")]
+    return _cached(("color", root, kind, key), build)
+
+
+def _first(items_fn, owner):
+    return items_fn(owner, bpy.context)[0][0]
+
+
+def _apply(p):
+    """Fill the ticked regions from the chosen type / armor / colour."""
+    idx = _index(p)
+    if idx is None:
+        return
+    color = "" if p.color == outfit_index.DEFAULT_COLOR else p.color
+    found = idx.regions(p.armor_type, p.armor, color)
+    for key, *_ in outfit.REGIONS:
+        if getattr(p, "use_" + key):
+            setattr(p, key, found.get(key, ""))
+
+
+def _on_type(self, context):
+    if _busy[0]:
+        return
+    _busy[0] = True
+    try:
+        self.armor = _first(_armor_items, self)
+        self.color = _first(_color_items, self)
+    finally:
+        _busy[0] = False
+    _apply(self)
+
+
+def _on_armor(self, context):
+    if _busy[0]:
+        return
+    _busy[0] = True
+    try:
+        self.color = _first(_color_items, self)
+    finally:
+        _busy[0] = False
+    _apply(self)
+
+
+def _on_color(self, context):
+    if not _busy[0]:
+        _apply(self)
+
+
+# ---------------------------------------------------------------------------
+# Settings
+# ---------------------------------------------------------------------------
 def _slot_search(key):
     def search(self, context, edit_text):
         root = _abs(self.components_path)
@@ -29,14 +135,11 @@ def _slot_search(key):
 def _slot_prop(key, label):
     return StringProperty(
         name=label,
-        description="Armour texture for the %s region. Type to search the "
-                    "components folder; leave empty to skip this region" % label.lower(),
+        description="Armour texture for the %s region. Filled by the armor picker; "
+                    "type here to override it by hand, or clear it to skip the region"
+                    % label.lower(),
         search=_slot_search(key), search_options={"SORT"},
     )
-
-
-def _on_path(self, context):
-    outfit.clear_cache()
 
 
 class M2OutfitProps(PropertyGroup):
@@ -47,6 +150,15 @@ class M2OutfitProps(PropertyGroup):
     export_path: StringProperty(
         name="Export Path", subtype="DIR_PATH",
         description="Where the atlas and the re-split outfit textures are written")
+    armor_type: EnumProperty(
+        name="Type", items=_type_items, update=_on_type,
+        description="Armor class: cloth, leather, mail, plate, ...")
+    armor: EnumProperty(
+        name="Armor", items=_armor_items, update=_on_armor,
+        description="An armor set. Picking one fills the ticked regions with its pieces")
+    color: EnumProperty(
+        name="Colour", items=_color_items, update=_on_color,
+        description="Colour variation of the chosen armor")
     gender: EnumProperty(
         name="Gender", default="m",
         items=[("m", "Male", "Prefer _m components, then unisex"),
@@ -69,16 +181,20 @@ class M2OutfitProps(PropertyGroup):
     write_png: BoolProperty(name="PNG", default=True)
 
     __annotations__.update({k: _slot_prop(k, label) for k, label, *_ in outfit.REGIONS})
+    __annotations__.update({
+        "use_" + k: BoolProperty(
+            name=label, default=True,
+            description="Picking an armor fills the %s region" % label.lower())
+        for k, label, *_ in outfit.REGIONS})
 
 
 def _slots(p):
     return {k: getattr(p, k) for k, *_ in outfit.REGIONS}
 
 
-def _atlas_dir(p):
-    return _abs(p.export_path)
-
-
+# ---------------------------------------------------------------------------
+# Atlas image
+# ---------------------------------------------------------------------------
 def _get_atlas():
     return bpy.data.images.get(ATLAS_NAME)
 
@@ -113,6 +229,19 @@ def _save_atlas(img, folder):
     img.save()
 
 
+# ---------------------------------------------------------------------------
+# Operators
+# ---------------------------------------------------------------------------
+class M2_OT_outfit_rescan(Operator):
+    bl_idname = "m2.outfit_rescan"
+    bl_label = "Rescan Components"
+    bl_description = "Re-read the components folder (after adding or removing files)"
+
+    def execute(self, context):
+        _on_path(context.scene.m2_outfit, context)
+        return {"FINISHED"}
+
+
 class M2_OT_outfit_build(Operator):
     bl_idname = "m2.outfit_build"
     bl_label = "Build Outfit Atlas"
@@ -134,13 +263,13 @@ class M2_OT_outfit_build(Operator):
             return {"CANCELLED"}
         slots = {k: v for k, v in _slots(p).items() if v}
         if not slots:
-            self.report({"ERROR"}, "Pick at least one armour component.")
+            self.report({"ERROR"}, "Pick an armor (or at least one region) first.")
             return {"CANCELLED"}
         size = int(p.atlas_size)
         msgs = []
         rgba, used = outfit.build_atlas(root, slots, size, p.gender, log=msgs.append)
         img = _write_atlas(rgba, size)
-        folder = _atlas_dir(p)
+        folder = _abs(p.export_path)
         if folder:
             try:
                 _save_atlas(img, folder)
@@ -229,12 +358,18 @@ class M2_OT_outfit_export(Operator):
         return {"FINISHED"}
 
 
-class VIEW3D_PT_m2_outfit(Panel):
-    bl_idname = "VIEW3D_PT_m2_outfit"
-    bl_label = "M2 Outfit Textures"
+# ---------------------------------------------------------------------------
+# Panels
+# ---------------------------------------------------------------------------
+class _OutfitPanel:
     bl_space_type = "VIEW_3D"
     bl_region_type = "UI"
     bl_category = "M2"
+
+
+class VIEW3D_PT_m2_outfit(_OutfitPanel, Panel):
+    bl_idname = "VIEW3D_PT_m2_outfit"
+    bl_label = "M2 Outfit Textures"
 
     def draw(self, context):
         layout = self.layout
@@ -247,16 +382,49 @@ class VIEW3D_PT_m2_outfit(Panel):
         row.prop(p, "atlas_size", text="")
 
         box = layout.box()
-        box.label(text="Armour components", icon="MATCLOTH")
-        col = box.column(align=True)
-        for key, label, *_ in outfit.REGIONS:
-            col.prop(p, key, text=label)
+        row = box.row()
+        row.label(text="Armor", icon="MATCLOTH")
+        row.operator("m2.outfit_rescan", text="", icon="FILE_REFRESH")
+        box.prop(p, "armor_type")
+        box.prop(p, "armor")
+        box.prop(p, "color")
+        box.label(text="Fills the regions ticked below", icon="INFO")
 
+
+class VIEW3D_PT_m2_outfit_regions(_OutfitPanel, Panel):
+    bl_idname = "VIEW3D_PT_m2_outfit_regions"
+    bl_label = "Regions"
+    bl_parent_id = "VIEW3D_PT_m2_outfit"
+    bl_options = {"DEFAULT_CLOSED"}
+
+    def draw(self, context):
+        p = context.scene.m2_outfit
+        col = self.layout.column(align=True)
+        for key, label, *_ in outfit.REGIONS:
+            row = col.row(align=True)
+            row.prop(p, "use_" + key, text="")
+            row.prop(p, key, text=label)
+
+
+class VIEW3D_PT_m2_outfit_atlas(_OutfitPanel, Panel):
+    bl_idname = "VIEW3D_PT_m2_outfit_atlas"
+    bl_label = "Atlas"
+    bl_parent_id = "VIEW3D_PT_m2_outfit"
+
+    def draw(self, context):
+        layout = self.layout
         layout.operator("m2.outfit_build", icon="TEXTURE")
         layout.operator("m2.outfit_assign", icon="MATERIAL")
 
-        box = layout.box()
-        box.label(text="Export", icon="EXPORT")
+
+class VIEW3D_PT_m2_outfit_export(_OutfitPanel, Panel):
+    bl_idname = "VIEW3D_PT_m2_outfit_export"
+    bl_label = "Export"
+    bl_parent_id = "VIEW3D_PT_m2_outfit"
+
+    def draw(self, context):
+        p = context.scene.m2_outfit
+        box = self.layout
         row = box.row(align=True)
         row.prop(p, "write_blp", toggle=True)
         row.prop(p, "write_png", toggle=True)
@@ -269,10 +437,14 @@ class VIEW3D_PT_m2_outfit(Panel):
 
 _classes = (
     M2OutfitProps,
+    M2_OT_outfit_rescan,
     M2_OT_outfit_build,
     M2_OT_outfit_assign,
     M2_OT_outfit_export,
     VIEW3D_PT_m2_outfit,
+    VIEW3D_PT_m2_outfit_regions,
+    VIEW3D_PT_m2_outfit_atlas,
+    VIEW3D_PT_m2_outfit_export,
 )
 
 
