@@ -173,8 +173,8 @@ class M2OutfitProps(PropertyGroup):
                ("4096", "4096 x 2048", "Very large")])
     skin_path: StringProperty(
         name="Skin", subtype="FILE_PATH",
-        description="Optional body skin (PNG/BLP) shown underneath the outfit on the model "
-                    "as a painting reference. Never exported")
+        description="Optional fallback skin (PNG/BLP) shown under the outfit when the "
+                    "material has no colour texture of its own. Never exported")
     name_suffix: StringProperty(
         name="Name Suffix", default="",
         description="Appended to each exported file name (before _m/_f/_u), "
@@ -295,7 +295,8 @@ class M2_OT_outfit_build(Operator):
 class M2_OT_outfit_assign(Operator):
     bl_idname = "m2.outfit_assign"
     bl_label = "Use Atlas on Active Material"
-    bl_description = "Wire the outfit atlas into the active material's Base Color so it shows (and paints) on the model"
+    bl_description = ("Lay the outfit atlas over the active material's existing colour (the main skin), "
+                      "so it shows and paints on top of it")
 
     @classmethod
     def poll(cls, context):
@@ -332,24 +333,29 @@ class M2_OT_outfit_assign(Operator):
             out = next((n for n in nt.nodes if n.type == "OUTPUT_MATERIAL"), None) \
                 or nt.nodes.new("ShaderNodeOutputMaterial")
             nt.links.new(bsdf.outputs["BSDF"], out.inputs["Surface"])
-        color = node.outputs["Color"]
-        skin = self._skin_image(context.scene.m2_outfit)
-        for n in [n for n in nt.nodes if n.label in ("Outfit Skin", "Outfit Over Skin")]:
-            nt.nodes.remove(n)
-        if skin is not None:
-            sn = nt.nodes.new("ShaderNodeTexImage")
-            sn.label = "Outfit Skin"
-            sn.image = skin
-            sn.location = (-420, 300)
+        mix = next((n for n in nt.nodes if n.label == "Outfit Over Skin"), None)
+        if mix is None:
+            # Lay the outfit over whatever the material already shows as its
+            # colour (the main skin), leaving that setup untouched underneath.
+            under = bsdf.inputs["Base Color"].links
+            under = under[0].from_socket if under else None
+            if under is None:
+                skin = self._skin_image(context.scene.m2_outfit)
+                if skin is not None:
+                    sn = nt.nodes.new("ShaderNodeTexImage")
+                    sn.label = "Outfit Skin"
+                    sn.image = skin
+                    sn.location = (-420, 300)
+                    under = sn.outputs["Color"]
             mix = nt.nodes.new("ShaderNodeMix")
             mix.label = "Outfit Over Skin"
             mix.data_type = "RGBA"
             mix.location = (-160, 150)
             nt.links.new(node.outputs["Alpha"], mix.inputs[0])
-            nt.links.new(sn.outputs["Color"], mix.inputs[6])
+            if under is not None:
+                nt.links.new(under, mix.inputs[6])
             nt.links.new(node.outputs["Color"], mix.inputs[7])
-            color = mix.outputs[2]
-        nt.links.new(color, bsdf.inputs["Base Color"])
+            nt.links.new(mix.outputs[2], bsdf.inputs["Base Color"])
         nt.nodes.active = node
         self.report({"INFO"}, "Atlas assigned to '%s'." % mat.name)
         return {"FINISHED"}
