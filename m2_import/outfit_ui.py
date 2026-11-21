@@ -164,11 +164,17 @@ class M2OutfitProps(PropertyGroup):
         items=[("m", "Male", "Prefer _m components, then unisex"),
                ("f", "Female", "Prefer _f components, then unisex")])
     atlas_size: EnumProperty(
-        name="Atlas Size", default="512",
-        items=[("256", "256", "Low resolution, matches 128-wide components"),
-               ("512", "512", "Standard, matches 256-wide components"),
-               ("1024", "1024", "Extra detail for painting"),
-               ("2048", "2048", "Very large")])
+        name="Atlas Size", default="1024",
+        description="Skin texture size. The left half is the body (painted); "
+                    "the right half is the face and is left empty",
+        items=[("512", "512 x 256", "Low resolution, matches 128-wide components"),
+               ("1024", "1024 x 512", "Standard skin size, matches 256-wide components"),
+               ("2048", "2048 x 1024", "Extra detail for painting"),
+               ("4096", "4096 x 2048", "Very large")])
+    skin_path: StringProperty(
+        name="Skin", subtype="FILE_PATH",
+        description="Optional body skin (PNG/BLP) shown underneath the outfit on the model "
+                    "as a painting reference. Never exported")
     name_suffix: StringProperty(
         name="Name Suffix", default="",
         description="Appended to each exported file name (before _m/_f/_u), "
@@ -207,13 +213,14 @@ def _read_atlas(img):
     return np.ascontiguousarray(arr[::-1])
 
 
-def _write_atlas(rgba, size):
+def _write_atlas(rgba):
+    h, size = rgba.shape[:2]
     img = _get_atlas()
-    if img is not None and tuple(img.size) != (size, size):
+    if img is not None and tuple(img.size) != (size, h):
         bpy.data.images.remove(img)
         img = None
     if img is None:
-        img = bpy.data.images.new(ATLAS_NAME, size, size, alpha=True)
+        img = bpy.data.images.new(ATLAS_NAME, size, h, alpha=True)
         img.alpha_mode = "STRAIGHT"
     flat = (rgba[::-1].astype(np.float32) / 255.0).reshape(-1)
     img.pixels.foreach_set(flat)
@@ -268,7 +275,7 @@ class M2_OT_outfit_build(Operator):
         size = int(p.atlas_size)
         msgs = []
         rgba, used = outfit.build_atlas(root, slots, size, p.gender, log=msgs.append)
-        img = _write_atlas(rgba, size)
+        img = _write_atlas(rgba)
         folder = _abs(p.export_path)
         if folder:
             try:
@@ -295,6 +302,20 @@ class M2_OT_outfit_assign(Operator):
         ob = context.active_object
         return _get_atlas() is not None and ob is not None and ob.active_material is not None
 
+    @staticmethod
+    def _skin_image(p):
+        path = _abs(p.skin_path)
+        if not os.path.isfile(path):
+            return None
+        try:
+            if path.lower().endswith(".blp"):
+                png = os.path.join(bpy.app.tempdir, os.path.basename(path) + ".png")
+                outfit.textures.blp_to_png(path, png)
+                path = png
+            return bpy.data.images.load(path, check_existing=True)
+        except (OSError, RuntimeError, outfit.textures.BLPError):
+            return None
+
     def execute(self, context):
         mat = context.active_object.active_material
         mat.use_nodes = True
@@ -311,7 +332,24 @@ class M2_OT_outfit_assign(Operator):
             out = next((n for n in nt.nodes if n.type == "OUTPUT_MATERIAL"), None) \
                 or nt.nodes.new("ShaderNodeOutputMaterial")
             nt.links.new(bsdf.outputs["BSDF"], out.inputs["Surface"])
-        nt.links.new(node.outputs["Color"], bsdf.inputs["Base Color"])
+        color = node.outputs["Color"]
+        skin = self._skin_image(context.scene.m2_outfit)
+        for n in [n for n in nt.nodes if n.label in ("Outfit Skin", "Outfit Over Skin")]:
+            nt.nodes.remove(n)
+        if skin is not None:
+            sn = nt.nodes.new("ShaderNodeTexImage")
+            sn.label = "Outfit Skin"
+            sn.image = skin
+            sn.location = (-420, 300)
+            mix = nt.nodes.new("ShaderNodeMix")
+            mix.label = "Outfit Over Skin"
+            mix.data_type = "RGBA"
+            mix.location = (-160, 150)
+            nt.links.new(node.outputs["Alpha"], mix.inputs[0])
+            nt.links.new(sn.outputs["Color"], mix.inputs[6])
+            nt.links.new(node.outputs["Color"], mix.inputs[7])
+            color = mix.outputs[2]
+        nt.links.new(color, bsdf.inputs["Base Color"])
         nt.nodes.active = node
         self.report({"INFO"}, "Atlas assigned to '%s'." % mat.name)
         return {"FINISHED"}
@@ -377,6 +415,7 @@ class VIEW3D_PT_m2_outfit(_OutfitPanel, Panel):
         col = layout.column(align=True)
         col.prop(p, "components_path")
         col.prop(p, "export_path")
+        col.prop(p, "skin_path")
         row = layout.row(align=True)
         row.prop(p, "gender", expand=True)
         row.prop(p, "atlas_size", text="")

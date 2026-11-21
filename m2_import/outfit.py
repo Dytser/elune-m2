@@ -5,7 +5,9 @@ Character armour is stored as small per-region textures (``ArmUpperTexture``,
 they are pasted onto the same atlas so the whole outfit can be painted at once,
 then each region is cut back out and written as PNG/BLP.
 
-Region rectangles are given for a 512x512 atlas and scale with the atlas size.
+The atlas is the character skin: 2:1 (1024x512 at 1x). Only its left half holds the
+body (arms/hands, then torso/legs/feet, 256px each); the right half is the face and
+is left empty and untouched. Rectangles below are for 1024 wide and scale with it.
 Everything here works without Blender (images are numpy RGBA, top row first).
 """
 
@@ -17,7 +19,7 @@ import numpy as np
 
 from . import blp_encode, textures
 
-# key, label, folder on disk, filename code, (x, y, w, h) on a 512x512 atlas
+# key, label, folder on disk, filename code, (x, y, w, h) on a 1024x512 atlas
 REGIONS = (
     ("arm_upper",   "Arm Upper",   "ArmUpperTexture",   "au", (0,   0,   256, 128)),
     ("arm_lower",   "Arm Lower",   "ArmLowerTexture",   "al", (0,   128, 256, 128)),
@@ -34,8 +36,8 @@ _GENDER_ORDER = {"m": ("m", "u", "f"), "f": ("f", "u", "m")}
 
 
 def region_rect(key, atlas):
-    """Pixel rect (x, y, w, h), top-left origin, of a region on an ``atlas``-wide atlas."""
-    s = atlas / 512.0
+    """Pixel rect (x, y, w, h), top-left origin, of a region on an ``atlas``-wide (2:1) atlas."""
+    s = atlas / 1024.0
     x, y, w, h = REGION_BY_KEY[key][4]
     return int(x * s), int(y * s), int(w * s), int(h * s)
 
@@ -212,7 +214,7 @@ def build_atlas(root, slots, atlas, gender="m", log=print):
 
     Returns ``(rgba, used)`` where ``used`` maps region key -> path pasted.
     """
-    img = np.zeros((atlas, atlas, 4), np.uint8)
+    img = np.zeros((atlas // 2, atlas, 4), np.uint8)
     used = {}
     for key, name in slots.items():
         if not name:
