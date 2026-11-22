@@ -32,7 +32,8 @@ REGIONS = (
 )
 REGION_BY_KEY = {r[0]: r for r in REGIONS}
 _EXTS = (".png", ".blp")
-_GENDER_ORDER = {"m": ("m", "u", "f"), "f": ("f", "u", "m")}
+# Never fall back to the other gender: if a region has no female file the game draws nothing there.
+_GENDER_ORDER = {"m": ("m", "u"), "f": ("f", "u")}
 
 
 def region_rect(key, atlas):
@@ -175,40 +176,73 @@ def clear_cache():
     _list_cache.clear()
 
 
-def region_folder(root, key):
-    """The on-disk folder for a region inside ``root`` (case-insensitive), or ''."""
-    name = _listing(root).get(REGION_BY_KEY[key][2].lower())
-    return os.path.join(root, name) if name else ""
+def _roots(root):
+    """``root`` is one folder or a tuple of folders in priority order (first wins)."""
+    return (root,) if isinstance(root, str) else tuple(r for r in root if r)
+
+
+def region_folders(root, key):
+    """The on-disk folders for a region, one per root that has it (case-insensitive)."""
+    out = []
+    for r in _roots(root):
+        name = _listing(r).get(REGION_BY_KEY[key][2].lower())
+        if name:
+            out.append(os.path.join(r, name))
+    return out
 
 
 def component_names(root, key):
     """Sorted base names (no extension, no _m/_f/_u) available for a region."""
-    folder = region_folder(root, key)
     out = set()
-    for low in _listing(folder) if folder else ():
-        stem, ext = os.path.splitext(low)
-        if ext in _EXTS:
-            out.add(stem[:-2] if stem[-2:-1] == "_" and stem[-1:] in "mfu" else stem)
+    for folder in region_folders(root, key):
+        for low in _listing(folder):
+            stem, ext = os.path.splitext(low)
+            if ext in _EXTS:
+                out.add(stem[:-2] if stem[-2:-1] == "_" and stem[-1:] in "mfu" else stem)
     return sorted(out)
 
 
 def find_component(root, key, name, gender="m"):
     """Resolve ``name`` to ``(path, gender_suffix)``. Prefers ``gender``, then unisex."""
-    folder = region_folder(root, key)
-    if not (folder and name):
+    folders = region_folders(root, key)
+    if not (folders and name):
         return None
-    files = _listing(folder)
+    # the right gender beats the right folder; within a gender the first folder (a mod) wins
     for g in _GENDER_ORDER.get(gender, _GENDER_ORDER["m"]) + ("",):
-        for ext in _EXTS:
-            hit = files.get("%s%s%s" % (name, "_" + g if g else "", ext))
-            if hit:
-                return os.path.join(folder, hit), g
+        for folder in folders:
+            files = _listing(folder)
+            for ext in _EXTS:
+                hit = files.get("%s%s%s" % (name, "_" + g if g else "", ext))
+                if hit:
+                    return os.path.join(folder, hit), g
     return None
 
 
 # ---------------------------------------------------------------------------
 # Atlas build / split
 # ---------------------------------------------------------------------------
+LAYER_SEP = "+"     # a region value "pant_ll+boot_ll" = several items layered on one region
+
+
+def _over(dst, src):
+    """Alpha-composite straight-alpha RGBA ``src`` over ``dst`` (both uint8, same shape)."""
+    a = src[..., 3:4].astype(np.float32) / 255.0
+    b = dst[..., 3:4].astype(np.float32) / 255.0
+    out_a = a + b * (1 - a)
+    rgb = (src[..., :3] * a + dst[..., :3] * b * (1 - a)) / np.maximum(out_a, 1e-6)
+    return np.concatenate([np.rint(rgb), np.rint(out_a * 255)], -1).astype(np.uint8)
+
+
+def resolve(root, key, name, gender="m"):
+    """First layer of ``name`` that exists for ``gender``: ``(hit, layer name)``, else ``(None, first layer)``."""
+    parts = [n for n in name.split(LAYER_SEP) if n]
+    for n in parts:
+        hit = find_component(root, key, n, gender)
+        if hit:
+            return hit, n
+    return None, parts[0] if parts else ""
+
+
 def build_atlas(root, slots, atlas, gender="m", log=print):
     """Paste each ``{region key: component name}`` onto a blank atlas.
 
@@ -219,18 +253,23 @@ def build_atlas(root, slots, atlas, gender="m", log=print):
     for key, name in slots.items():
         if not name:
             continue
-        hit = find_component(root, key, name, gender)
-        if hit is None:
+        x, y, w, h = region_rect(key, atlas)
+        canvas = np.zeros((h, w, 4), np.uint8)
+        for part in (n for n in name.split(LAYER_SEP) if n):
+            hit = find_component(root, key, part, gender)
+            if hit is None:
+                continue
+            try:
+                src = read_image(hit[0])
+            except (OSError, PNGError, textures.BLPError, zlib.error) as exc:
+                log("could not read %s: %s" % (hit[0], exc))
+                continue
+            canvas = _over(canvas, resize(src, w, h)) if key in used else resize(src, w, h)
+            used[key] = hit[0]
+        if key not in used:
             log("component not found: %s (%s)" % (name, REGION_BY_KEY[key][1]))
             continue
-        try:
-            src = read_image(hit[0])
-        except (OSError, PNGError, textures.BLPError, zlib.error) as exc:
-            log("could not read %s: %s" % (hit[0], exc))
-            continue
-        x, y, w, h = region_rect(key, atlas)
-        img[y:y + h, x:x + w] = resize(src, w, h)
-        used[key] = hit[0]
+        img[y:y + h, x:x + w] = canvas
     return img, used
 
 
@@ -246,10 +285,12 @@ def split_atlas(rgba, root, slots, out_dir, gender="m", suffix="",
     for key, name in slots.items():
         if not name:
             continue
-        hit = find_component(root, key, name, gender)
+        hit, name = resolve(root, key, name, gender)    # layered regions export to the first layer found
         g = hit[1] if hit else ("u" if gender not in ("m", "f") else gender)
         x, y, w, h = region_rect(key, atlas)
         piece = rgba[y:y + h, x:x + w]
+        if hit is None and not piece[..., 3].any():
+            continue        # nothing to replace and nothing painted: don't write an empty file
         if native_size and hit:
             try:
                 sh, sw, _ = read_image(hit[0]).shape
