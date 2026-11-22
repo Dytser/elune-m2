@@ -14,6 +14,7 @@ GROUP_NAMES = {
     23: "HandAttachments", 24: "HeadAttachments", 25: "Blindfolds",
     26: "Shoulders", 27: "Helm", 28: "UpperArm",
     32: "Head",            # 3201/3202: tongue + head (confirmed by hand)
+    33: "Eyes",
 }
 
 

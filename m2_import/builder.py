@@ -47,6 +47,40 @@ _TEXTURE_TYPE_NAMES = {
 }
 
 
+# Short material names for client-supplied textures (M2Texture.type).
+_TEXTURE_TYPE_SHORT = {
+    1: "Skin", 2: "ObjectSkin", 3: "WeaponBlade", 4: "WeaponHandle", 5: "Environment",
+    6: "Hair", 7: "FacialHair", 8: "SkinExtra", 9: "UISkin", 10: "Accessory",
+    11: "MonsterSkin1", 12: "MonsterSkin2", 13: "MonsterSkin3", 14: "ItemIcon",
+    15: "GuildBackground", 16: "GuildEmblemColor", 17: "GuildBorder", 18: "GuildEmblem",
+    19: "Eyes", 20: "Jewelry", 21: "SecondarySkin", 22: "SecondaryHair",
+    23: "SecondaryArmor",
+}
+
+
+_BLEND_SHORT = {1: "AlphaKey", 2: "Alpha", 3: "NoAlphaAdd", 4: "Add", 5: "Mod", 6: "Mod2x",
+                7: "BlendAdd"}
+
+
+def _material_role(model, batch, section_id, is_char):
+    """A short readable name for what a batch's material draws: 'Skin', 'Eyes', 'Hair',
+    'EyeGlow', or the texture's file name for plain textured parts."""
+    texes = _batch_textures(model, batch)
+    if not texes:
+        return "Material_%d" % batch.material_index
+    t = texes[0]
+    if t.type:
+        return _TEXTURE_TYPE_SHORT.get(t.type, "Type_%d" % t.type)
+    if is_char and section_id // 100 == 17:
+        return "EyeGlow"
+    if t.filename:
+        stem = os.path.splitext(os.path.basename(t.filename.replace("\\", "/")))[0]
+        if stem:
+            return stem
+    fid = meta.texture_file_id(t)
+    return "Texture_%d" % fid if fid else "Material_%d" % batch.material_index
+
+
 def _batch_textures(model, batch):
     """The M2Texture rows a batch draws with, one per layer."""
     out = []
@@ -254,6 +288,15 @@ def _make_mesh_object(model, subs, name, mirror_x, batch_for_submesh,
 
     materials = []        # ordered (name, batch) pairs
     slot_lookup = {}      # name -> slot index
+    # One Blender material per distinct key for the whole model, named after its role
+    # ("Skin", "Eyes", ...) instead of the long texture + render-state key.
+    mat_cache = model.__dict__.setdefault("_mat_cache", {})
+    used_names = model.__dict__.setdefault("_mat_used", {})
+    is_char = geoset_names.is_character([s.skin_section_id for s in model.skin.submeshes])
+
+    section_of = {i: s.skin_section_id for i, s in enumerate(model.skin.submeshes)}
+
+    role = {}
 
     def slot_for_submesh(si):
         b = batch_for_submesh.get(si)
@@ -272,6 +315,7 @@ def _make_mesh_object(model, subs, name, mirror_x, batch_for_submesh,
                                               int(mm.flags),
                                               int(b.material_layer))
             mat_name = "%s_t%d_%s" % (base, first_type, state)
+            role[mat_name] = _material_role(model, b, section_of.get(si, 0), is_char)
         if mat_name not in slot_lookup:
             slot_lookup[mat_name] = len(materials)
             materials.append((mat_name, b))
@@ -307,7 +351,19 @@ def _make_mesh_object(model, subs, name, mirror_x, batch_for_submesh,
     mesh.polygons.foreach_set("use_smooth", [True] * len(mesh.polygons))
 
     for mat_name, batch in materials:
-        mat = bpy.data.materials.get(mat_name) or bpy.data.materials.new(mat_name)
+        mat = mat_cache.get(mat_name)
+        if mat is None or mat.name not in bpy.data.materials:
+            base = role.get(mat_name, mat_name)
+            if base in used_names and used_names[base] != mat_name:
+                # same role, different render state: say how it differs
+                mi = batch.material_index if batch is not None else -1
+                bm = int(model.materials[mi].blend_mode) if 0 <= mi < len(model.materials) else 0
+                alt = "%s_%s" % (base, _BLEND_SHORT.get(bm, "Blend%d" % bm) if bm else "Opaque")
+                base = alt if alt not in used_names else base
+            used_names.setdefault(base, mat_name)
+            mat = bpy.data.materials.new(base)
+            mat["m2_material_key"] = mat_name
+            mat_cache[mat_name] = mat
         mat.use_nodes = True
         _stamp_material(mat, model, batch)
         if tex_ctx is not None and batch is not None:
@@ -526,8 +582,11 @@ def _build_armature(model, name, mirror_x, collection, bone_tilt=0.0,
     return arm_obj
 
 
-# Groups from here up are accessories (e.g. 3701, 3902) and never go in Core Model.
-CORE_MAX_GROUP = 32
+# Groups above this are accessories (e.g. 3701, 3902) and never go in Core Model.
+CORE_MAX_GROUP = 33
+# Groups that are never part of the core model although they sit below CORE_MAX_GROUP:
+# facial jewellery (16xx) and eye effects (17xx) each get their own geoset collection.
+NON_CORE_GROUPS = {16, 17}
 # Extra geosets that belong in Core Model although they are not a group's
 # default piece: 3202 is the second head mesh (3201/3202 = tongue + head).
 CORE_EXTRA_IDS = {3202}
@@ -535,12 +594,12 @@ CORE_EXTRA_IDS = {3202}
 
 def _is_core(sid, group_lowest):
     """Core Model = a group's default piece (its lowest id, if that is variant
-    0 or 1), for the character groups only, plus CORE_EXTRA_IDS."""
+    0 or 1), for the character groups only (33 = eyes), plus CORE_EXTRA_IDS."""
     if sid in CORE_EXTRA_IDS:
         return True
     group = sid // 100
-    return (group <= CORE_MAX_GROUP and sid == group_lowest
-            and sid % 100 <= 1)
+    return (group <= CORE_MAX_GROUP and group not in NON_CORE_GROUPS
+            and sid == group_lowest and sid % 100 <= 1)
 
 
 def _find_layer_collection(coll, lc=None):
