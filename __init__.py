@@ -17,6 +17,7 @@ from .m2_import import versions, builder
 from .m2_import import m2_ui
 from .m2_import import m2_physics_ui
 from .m2_import import outfit_ui
+from .m2_import import prefs
 
 
 def _copy_base_skins(base_m2, out_m2):
@@ -130,19 +131,6 @@ class IMPORT_SCENE_OT_wow_m2(Operator, ImportHelper):
                     "first, else BLP converted to PNG) and add it to the material",
         default=True,
     )
-    texture_root: StringProperty(
-        name="Texture Folder",
-        description="Extra folder to search for textures, laid out like the game "
-                    "data (Character/NightElf/...). The model's own folder and its "
-                    "parents are always searched",
-        subtype="DIR_PATH", default="",
-    )
-    texture_listfile: StringProperty(
-        name="Listfile",
-        description="Optional community listfile (id;path) used to resolve "
-                    "FileDataID textures on retail models to paths",
-        subtype="FILE_PATH", default="",
-    )
     show_helpers: BoolProperty(
         name="Show Helpers",
         description="Keep the 'Helpers' collection (attachment and event empties, "
@@ -255,8 +243,10 @@ class IMPORT_SCENE_OT_wow_m2(Operator, ImportHelper):
         sub_h.prop(self, "show_helpers")
         layout.prop(self, "import_textures")
         if self.import_textures:
-            layout.prop(self, "texture_root")
-            layout.prop(self, "texture_listfile")
+            box = layout.box()
+            box.label(text="Looks next to the .m2 and above it, then in:", icon="INFO")
+            box.label(text=prefs.path("game_path") or "(no Game Export Folder set)")
+            box.operator("m2.open_preferences", icon="PREFERENCES")
         col.prop(self, "bone_tilt")
         col.prop(self, "weld_seams")
         sub = col.column()
@@ -307,8 +297,8 @@ class IMPORT_SCENE_OT_wow_m2(Operator, ImportHelper):
                     import_events=self.import_events,
                     show_helpers=self.show_helpers,
                     import_textures=self.import_textures,
-                    texture_root=bpy.path.abspath(self.texture_root),
-                    listfile=bpy.path.abspath(self.texture_listfile),
+                    texture_root=prefs.path("game_path"),
+                    listfile=prefs.path("listfile"),
                     normalize_uvs=self.normalize_uvs,
                     repair_weights=self.repair_weights,
                     infer_bone_names=self.infer_bone_names,
@@ -962,6 +952,7 @@ def register():
         bpy.utils.register_class(cls)
     bpy.types.TOPBAR_MT_file_import.append(_menu_func_import)
     bpy.types.TOPBAR_MT_file_export.append(_menu_func_export)
+    prefs.register()
     m2_ui.register()
     m2_physics_ui.register()
     outfit_ui.register()
@@ -971,6 +962,7 @@ def unregister():
     outfit_ui.unregister()
     m2_physics_ui.unregister()
     m2_ui.unregister()
+    prefs.unregister()
     bpy.types.TOPBAR_MT_file_export.remove(_menu_func_export)
     bpy.types.TOPBAR_MT_file_import.remove(_menu_func_import)
     for cls in reversed(_classes):
