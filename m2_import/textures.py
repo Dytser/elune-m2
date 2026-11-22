@@ -4,8 +4,8 @@ Lookup order for each texture (first hit wins):
 
 1. For every search root, a ``.png``, then a ``.webp``, then a ``.blp`` at the
    texture's path inside the M2 (``Character\\NightElf\\Female\\X.blp``).
-   Roots are the optional *Texture Folder*, then the folder holding the .m2 and
-   each of its parent folders, so a loose extract laid out like the game's data
+   Roots are the folder holding the .m2 and each of its parent folders, then the
+   Game Export Folder from the add-on preferences, so a loose extract laid out like the game's data
    tree is found without any setup.
 2. Retail models carry a FileDataID instead of a path. Those are looked up by
    ``<id>.png`` / ``.webp`` / ``.blp`` next to the model or in the texture
@@ -18,6 +18,7 @@ Everything outside :class:`TextureContext.apply` works without Blender.
 """
 
 import os
+import re
 import struct
 import zlib
 
@@ -211,6 +212,15 @@ class _FS:
             cur = os.path.join(cur, name)
         return cur if os.path.isfile(cur) else None
 
+    def find_dir(self, base, rel):
+        cur = base
+        for part in rel.replace("\\", "/").split("/"):
+            name = self._list(cur).get(part.lower())
+            if name is None:
+                return None
+            cur = os.path.join(cur, name)
+        return cur if os.path.isdir(cur) else None
+
 
 def _read_listfile(path, wanted):
     """FileDataID -> path for the ids in ``wanted`` from an ``id;path`` file."""
@@ -241,10 +251,12 @@ class TextureContext:
         self.fs = _FS()
         m2_dir = os.path.dirname(os.path.abspath(m2_path)) if m2_path else ""
         self.m2_dir = m2_dir
+        self.m2_path = os.path.abspath(m2_path) if m2_path else ""
+        self._runtime_cache = {}    # texture type -> file or None
         self.texture_root = texture_root or ""
+        # The model's own folder and every folder above it come first, so a texture edited
+        # next to the .m2 wins; the game export folder is the fallback.
         roots = []
-        if self.texture_root:
-            roots.append(self.texture_root)
         d = m2_dir
         for _ in range(8):
             if d and d not in roots:
@@ -253,6 +265,8 @@ class TextureContext:
             if parent == d:
                 break
             d = parent
+        if self.texture_root and self.texture_root not in roots:
+            roots.append(self.texture_root)
         self.roots = roots
         self.id_paths = _read_listfile(listfile, set(int(i) for i in file_ids if i))
         if listfile:
@@ -279,12 +293,86 @@ class TextureContext:
             hit = self._by_path(mapped)
             if hit:
                 return hit
-        for root in [r for r in (self.texture_root, self.m2_dir) if r]:
+        for root in [r for r in (self.m2_dir, self.texture_root) if r]:
             for ext in IMAGE_EXTS:
                 hit = self.fs.find(root, "%d%s" % (fid, ext))
                 if hit:
                     return hit
         return None
+
+    def _race_gender(self):
+        """('NightElf', 'Female') from the model's path/name, or ('', '')."""
+        p = self.m2_path.replace("\\", "/")
+        m = re.search(r"character/([^/]+)/(male|female)/", p, re.I)
+        if m:
+            return m.group(1), m.group(2)
+        stem = os.path.splitext(os.path.basename(p))[0]
+        m = re.fullmatch(r"(.+?)(male|female)", stem, re.I)
+        return (m.group(1), m.group(2)) if m else ("", "")
+
+    # M2Texture.type -> (file-name regex, names to reject) for client-composited textures
+    # The numbers may be followed by a suffix (Skin00_08_hd.blp), so match up to the extension.
+    _TAIL = r"(\d+)_(\d+)(?:_[a-z0-9]+)*\."
+    _RUNTIME_KINDS = {
+        1: (r"skin" + _TAIL, ("extra", "naked")),
+        6: (r"hair" + _TAIL, ("facial",)),
+        7: (r"(?:facial|beard)\w*?" + _TAIL, ()),
+        8: (r"skinextra" + _TAIL, ()),
+        19: (r"eyes?" + _TAIL, ("glow", "reflect")),
+    }
+
+    def find_runtime_texture(self, ttype):
+        """File for a client-supplied texture type (skin, hair, eyes, ...) or None.
+
+        The M2 names no file for these; the game picks one from the race's customization
+        set (Skin00_08, Hair01_03, Eyes00_02, ...). Any number is accepted: the lowest wins,
+        looked for in the model's folder, the folder above it (where hair and eyes live)
+        and Character/<Race>[/<Gender>] under every search root.
+        """
+        if ttype in self._runtime_cache:
+            return self._runtime_cache[ttype]
+        self._runtime_cache[ttype] = None
+        spec = self._RUNTIME_KINDS.get(ttype)
+        if spec is None:
+            return None
+        pat, reject = re.compile(spec[0]), spec[1]
+        race, gender = self._race_gender()
+        m2stem = os.path.splitext(os.path.basename(self.m2_path))[0].lower()
+        prefix = (race + gender).lower()
+        squash = lambda n: n.replace("_", "")
+        folders = []
+
+        def add(d):
+            if d and d not in folders and os.path.isdir(d):
+                folders.append(d)
+
+        if self.m2_dir:
+            add(self.m2_dir)
+            add(os.path.dirname(self.m2_dir))
+        for root in self.roots:
+            if race:
+                add(self.fs.find_dir(root, "Character/%s/%s" % (race, gender)))
+                add(self.fs.find_dir(root, "Character/%s" % race))
+        best = None
+        for fi, folder in enumerate(folders):
+            for low, name in self.fs._list(folder).items():
+                m = pat.search(low)
+                ext = os.path.splitext(low)[1]
+                if not m or ext not in IMAGE_EXTS or any(r in low for r in reject):
+                    continue
+                same = squash(low).startswith(squash(m2stem)) or bool(prefix and squash(low).startswith(prefix))
+                key = (fi, not same, IMAGE_EXTS.index(ext), int(m.group(1)), int(m.group(2)))
+                if best is None or key < best[0]:
+                    best = (key, os.path.join(folder, name))
+        if best:
+            self._runtime_cache[ttype] = best[1]
+        else:
+            seen = sorted({n for f in folders for n in self.fs._list(f).values()
+                           if os.path.splitext(n)[1].lower() in IMAGE_EXTS
+                           and any(w in n.lower() for w in ("skin", "hair", "eye"))})
+            self.log("type %d texture: no match. searched %s; similar files: %s"
+                     % (ttype, folders or "(no folders)", ", ".join(seen[:12]) or "none"))
+        return self._runtime_cache[ttype]
 
     def find(self, filename="", fid=0):
         if filename:
@@ -303,6 +391,10 @@ class TextureContext:
                 self._missing.add(label)
                 self.log("texture not found: %s" % label)
             return None
+        return self.image_for_path(src)
+
+    def image_for_path(self, src):
+        """A bpy image for a located file (BLP converted to PNG first)."""
         if src in self._cache:
             return self._cache[src]
         import bpy
@@ -364,10 +456,18 @@ class TextureContext:
 
         driven = False
         for i, layer in enumerate(layers):
-            if layer.get("type"):          # supplied by the client at runtime
+            img = None
+            if layer.get("type"):          # client-composited: skin, hair, eyes, ...
+                src = self.find_runtime_texture(layer["type"])
+                if src:
+                    img = self.image_for_path(src)
+                    if img is not None:
+                        self.log("type %d texture: %s" % (layer["type"], os.path.basename(src)))
+            if img is None and layer.get("type"):   # supplied by the client at runtime
                 self.n_runtime += 1
                 continue
-            img = self.image_for(layer.get("filename", ""), layer.get("fid", 0))
+            if img is None:
+                img = self.image_for(layer.get("filename", ""), layer.get("fid", 0))
             if img is None:
                 continue
             tex = nt.nodes.new("ShaderNodeTexImage")
