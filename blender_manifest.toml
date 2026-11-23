@@ -4,7 +4,7 @@ id = "elune_m2"
 version = "2.0.0"
 name = "Elune M2"
 tagline = "Import and re-export World of Warcraft M2 models with per-expansion parsers"
-maintainer = "Lila"
+maintainer = "Lila & Dytser"
 type = "add-on"
 
 tags = ["Import-Export", "3D View"]
@@ -15,5 +15,9 @@ license = [
   "SPDX:GPL-3.0-or-later",
 ]
 
-# This add-on only reads local files chosen by the user and creates Blender
-# data. It needs no network or extra permissions.
+# Network is only used when you press "Check for Update" / "Download" for the
+# community listfile in the add-on preferences. Files: the listfile is written to
+# the path chosen there.
+[permissions]
+network = "Check for and download the community listfile"
+files = "Save the community listfile to the chosen location"

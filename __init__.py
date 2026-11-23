@@ -1,6 +1,7 @@
 """Elune M2: Blender 5.x extension entry point."""
 
 import os
+import struct
 import sys
 import traceback
 
@@ -16,6 +17,7 @@ from . import m2_import
 from .m2_import import versions, builder
 from .m2_import import m2_ui
 from .m2_import import m2_physics_ui
+from .m2_import import prefs, listfile_update
 
 
 def _copy_base_skins(base_m2, out_m2):
@@ -145,6 +147,13 @@ class IMPORT_SCENE_OT_wow_m2(Operator, ImportHelper):
                     "so triggers (sheathe, footsteps, cast, breath) fire in-game",
         default=True,
     )
+    parent_skel_path: StringProperty(
+        name="Parent Skeleton",
+        description="Allied races (Void Elf, Nightborne, Lightforged...): the .skel of "
+                    "the main race whose animations this model inherits. Leave empty to "
+                    "find it automatically next to the model (via the SKPD parent id)",
+        subtype="FILE_PATH", default="",
+    )
     anim_fps: bpy.props.IntProperty(
         name="Animation FPS",
         description="Frames per second used to convert millisecond keyframe times",
@@ -240,6 +249,7 @@ class IMPORT_SCENE_OT_wow_m2(Operator, ImportHelper):
         sub.prop(self, "anim_fps")
         sub.prop(self, "max_animations")
 
+        layout.prop(self, "parent_skel_path")
         layout.prop(self, "mirror_x")
         layout.prop(self, "normalize_uvs")
         layout.prop(self, "repair_weights")
@@ -265,7 +275,13 @@ class IMPORT_SCENE_OT_wow_m2(Operator, ImportHelper):
         for path in paths:
             try:
                 print("[M2] loading %s" % path, flush=True)
-                model = m2_import.factory.load_model(path, self.expansion)
+                from .m2_import import skel as _skel_mod
+                _skel_mod.parent_skel_override = (
+                    bpy.path.abspath(self.parent_skel_path) if self.parent_skel_path else "")
+                try:
+                    model = m2_import.factory.load_model(path, self.expansion)
+                finally:
+                    _skel_mod.parent_skel_override = ""
                 root = builder.build(
                     model,
                     import_armature=self.import_armature,
@@ -514,6 +530,22 @@ class EXPORT_SCENE_OT_wow_m2(Operator, ExportHelper):
                     "Register your .blp under this id",
         default=0, min=0,
     )
+    parent_mode: EnumProperty(
+        name="Allied Race",
+        description="How to export a model whose skeleton inherits a parent race's "
+                    "animations (Void Elf, Nightborne, Lightforged...). Ignored for "
+                    "other models",
+        items=[
+            ("LINK", "Keep parent link",
+             "Write a child .skel with the SKPD parent link, holding only this race's "
+             "own animations plus any inherited animation you edited. Everything else "
+             "keeps coming from the main race in game. Needs the model's source M2"),
+            ("FLATTEN", "Flatten into one model",
+             "Embed every animation in the M2 and drop the parent link: a standalone "
+             "model that no longer follows the main race"),
+        ],
+        default="LINK",
+    )
     full_custom: BoolProperty(
         name="Full Custom (write .skel)",
         description="Build a brand-new retail character: a mesh-only single-LOD M2 "
@@ -576,6 +608,8 @@ class EXPORT_SCENE_OT_wow_m2(Operator, ExportHelper):
         if self.container == "CHUNKED":
             layout.prop(self, "new_model")
             if self.new_model:
+                layout.prop(self, "parent_mode")
+                layout.prop(self, "skel_file_id")
                 layout.prop(self, "skin_file_id")
                 layout.prop(self, "texture_file_id")
                 layout.prop(self, "m2_version")
@@ -696,6 +730,22 @@ class EXPORT_SCENE_OT_wow_m2(Operator, ExportHelper):
 
                 phys_bytes = _build_phys_bytes(context, objects, self.mirror_x, self, model)
 
+                # Allied race (the skeleton inherits a parent race's animations).
+                link = False
+                if getattr(model, "parent_skel", None):
+                    if (self.parent_mode == "LINK" and src_model is not None
+                            and "SKID" in (src_model.aux_chunks or {})
+                            and model.skel_chunks.get("SKPD")):
+                        link = True
+                    else:
+                        if self.parent_mode == "LINK":
+                            print("[M2] allied export: no source M2 with a SKID to link "
+                                  "from; flattening instead", flush=True)
+                        for s in model.sequences:
+                            s.flags &= ~0x1000    # child-of-parent marker means nothing now
+                        print("[M2] allied export: flattened (all animations embedded, "
+                              "no parent link)", flush=True)
+
                 # The client finds a chunked model's skin through SFID, so a
                 # missing chunk means no skin and a crash on load. Fall back to
                 # the source model's first skin id, repeated for every LOD slot:
@@ -715,10 +765,33 @@ class EXPORT_SCENE_OT_wow_m2(Operator, ExportHelper):
                 # One TXID entry per texture the materials resolved to, not just
                 # the fallback id: a multi-texture model needs them all.
                 tex_ids = [t.file_data_id for t in model.textures]
+                bbase = self.filepath[:-3] if self.filepath.lower().endswith(".m2") else self.filepath
+                if link:
+                    from .m2_import import allied
+                    pedc, _written = allied.make_link_child(
+                        model, int(model.parent_skel["nseq"]),
+                        (src_model.aux_chunks or {}).get("PEDC"),
+                        [e.identifier for e in src_model.events])
+                    skel_bytes = writer.write_skel(model, child=True)
+                    keep_chunks = ("TXAC", "LDV1", "PSBC", "SKID")
+                    for k in keep_chunks:
+                        if k in src_model.aux_chunks:
+                            model.aux_chunks[k] = src_model.aux_chunks[k]
+                    model.aux_chunks["PEDC"] = pedc
+                    if self.skel_file_id:
+                        model.aux_chunks["SKID"] = struct.pack("<I", int(self.skel_file_id))
+                    # Bones live in the .skel: keep 0x100000, drop the external-.anim bits.
+                    model.global_flags = ((int(src_model.global_flags)
+                                           & ~allied.DROP_HEADER_FLAGS)
+                                          | 0x80 | allied.SKEL_ONLY_HEADER_FLAGS)
+                    with open(bbase + ".skel", "wb") as f:
+                        f.write(skel_bytes)
+                    print("[M2] allied export: .skel written (SKPD parent FileDataID %d)"
+                          % int.from_bytes(model.skel_chunks["SKPD"][8:12], "little"),
+                          flush=True)
                 m2_bytes, skin_bytes = writer.write_m2_chunked(
                     model, version=self.m2_version, skin_file_ids=skin_ids,
                     texture_file_ids=tex_ids if any(tex_ids) else None)
-                bbase = self.filepath[:-3] if self.filepath.lower().endswith(".m2") else self.filepath
                 with open(self.filepath, "wb") as f:
                     f.write(m2_bytes)
                 if skin_bytes is not None:
@@ -935,6 +1008,8 @@ def register():
         bpy.utils.register_class(cls)
     bpy.types.TOPBAR_MT_file_import.append(_menu_func_import)
     bpy.types.TOPBAR_MT_file_export.append(_menu_func_export)
+    prefs.register()
+    listfile_update.register()
     m2_ui.register()
     m2_physics_ui.register()
 
@@ -942,6 +1017,8 @@ def register():
 def unregister():
     m2_physics_ui.unregister()
     m2_ui.unregister()
+    listfile_update.unregister()
+    prefs.unregister()
     bpy.types.TOPBAR_MT_file_export.remove(_menu_func_export)
     bpy.types.TOPBAR_MT_file_import.remove(_menu_func_import)
     for cls in reversed(_classes):

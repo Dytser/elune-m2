@@ -5,6 +5,7 @@ from mathutils import Matrix, Vector, Quaternion
 
 from . import names
 from . import coords
+from . import action_fp
 
 # Bone length used by the armature build. Attachment placement relies on it,
 # so it lives here and is imported by builder.py.
@@ -510,7 +511,7 @@ def build_animations(model, arm_obj, mirror_x, fps, log, max_animations=0, name=
         label = names.animation_name(seq.id)
         if seq.variation_index:
             label = "%s_%d" % (label, seq.variation_index)
-        action = bpy.data.actions.new("%s_%s" % (model_name, label))
+        action = bpy.data.actions.new(label)
         fcurves, slot = _new_action_channelbag(action)
 
         action_max = None
@@ -552,6 +553,13 @@ def build_animations(model, arm_obj, mirror_x, fps, log, max_animations=0, name=
         if getattr(seq, "bounds", None):
             (bx0, by0, bz0), (bx1, by1, bz1), br = seq.bounds
             action["m2_seq_bounds"] = [bx0, by0, bz0, bx1, by1, bz1, br]
+        if getattr(model, "parent_skel", None):
+            # Allied race: where this clip comes from, and (for inherited ones) a
+            # fingerprint so export can tell whether it was edited.
+            action["m2_seq_origin"] = getattr(seq, "origin", "own")
+            action["m2_seq_parent_index"] = int(getattr(seq, "parent_index", -1))
+            if action["m2_seq_origin"] == "parent":
+                action["m2_seq_fingerprint"] = action_fp.fingerprint(action)
         made += 1
         if first is None:
             first, first_slot, first_max = action, slot, action_max
@@ -631,7 +639,7 @@ def _build_global_sequences(bones, fcurves_factory, model_name, mirror_x, fps, l
                    if tr is not None and tr.global_sequence >= 0})
     made = 0
     for gs in used:
-        action = bpy.data.actions.new("%s_global_%d" % (model_name, gs))
+        action = bpy.data.actions.new("Global_%d" % gs)
         fcurves, _slot = fcurves_factory(action)
         keyed = False
         for bi, b in enumerate(bones):

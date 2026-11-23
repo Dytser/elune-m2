@@ -933,6 +933,23 @@ class VIEW3D_PT_m2_action(_M2PanelBase, Panel):
         col.label(text="Sequence index: %d" % idx)
         col.label(text="Duration: %d ms" % dur)
         col.label(text="Flags: 0x%X" % flags)
+        origin = act.get("m2_seq_origin")
+        if origin == "parent":
+            edited = False
+            fp = act.get("m2_seq_fingerprint")
+            if fp:
+                try:
+                    from . import action_fp
+                    edited = action_fp.fingerprint(act) != fp
+                except Exception:  # noqa: BLE001
+                    edited = False
+            col.label(text="Inherited from parent skeleton (%s)"
+                      % ("EDITED: exported as override" if edited else "unchanged"),
+                      icon="LINKED")
+        elif origin == "override":
+            col.label(text="Overrides the parent skeleton's animation", icon="LINKED")
+        elif origin == "own":
+            col.label(text="Own animation (not in the parent)", icon="LINKED")
         # Cross-fade into / out of this animation in game. 0 = hard snap.
         if "m2_seq_blend_time" in act.keys():
             bcol = box.column(align=True)

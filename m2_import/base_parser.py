@@ -87,7 +87,7 @@ class BaseM2Parser:
             return
         name_base = m2_path[:-3] if m2_path.lower().endswith(".m2") else m2_path
         print("[M2] loading external skeleton %s" % os.path.basename(skel_path))
-        skel_mod.load_skel(skel_path, self.model, name_base)
+        skel_mod.load_with_parents(skel_path, self.model, name_base)
 
     def parse_header(self):
         raise NotImplementedError

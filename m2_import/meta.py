@@ -25,6 +25,9 @@ def build(model, fps):
         "texture_file_ids": [texture_file_id(t) for t in model.textures],
         "aux_chunks": {name: base64.b64encode(raw).decode("ascii")
                        for name, raw in (model.aux_chunks or {}).items()},
+        "skel_chunks": {name: base64.b64encode(raw).decode("ascii")
+                        for name, raw in (getattr(model, "skel_chunks", None) or {}).items()},
+        "parent_skel": getattr(model, "parent_skel", None),
         "bounds": {
             "bbox": [list(model.bounding_min or (0, 0, 0)), list(model.bounding_max or (0, 0, 0)),
                      float(model.bounding_radius or 0.0)],
@@ -41,6 +44,8 @@ def build(model, fps):
              "blend_in": getattr(s, "blend_time_in", 150),
              "blend_out": getattr(s, "blend_time_out", 0),
              "alias_next": int(getattr(s, "alias_next", i)),
+             "origin": getattr(s, "origin", "own"),
+             "parent_index": int(getattr(s, "parent_index", -1)),
              "bounds": ([list(s.bounds[0]), list(s.bounds[1]), s.bounds[2]]
                         if getattr(s, "bounds", None) else None)}
             for i, s in enumerate(model.sequences)

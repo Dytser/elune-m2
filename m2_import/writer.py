@@ -180,18 +180,29 @@ def link_animation_variations(model):
             seqs[idxs[0]].frequency += 0x7FFF - share * n   # remainder to base
 
 
-def _pack_sequence(s, bounds):
+# Sequence flags marking "this sequence's keys are in this file". Retail sets
+# BOTH bits on every embedded sequence (0x820, 0x8a1, 0x8e1, ...) and neither
+# on sequences stored in external .anim files (0x0, 0x81, 0xc1, ...). A
+# sequence with 0x20 but without 0x800 makes the client look for its .anim
+# file (there is no AFID after export) and play the bind pose instead: that
+# broke Sit, Work and most emotes on re-exported retail characters.
+SEQ_EMBEDDED = 0x20 | 0x800
+# .skel files never carry 0x800 (retail's embedded .skel sequences are plain 0x20).
+SKEL_EMBEDDED = 0x20
+
+
+def _pack_sequence(s, bounds, embedded=SEQ_EMBEDDED):
     """``bounds`` is the fallback for a sequence without its own box: the
     rest-pose mesh extents, never the render bounds (which cover every
     animation and would push the character-screen camera far away)."""
-    # 0x20 = "this sequence's keys are in this file". Every sequence we write
-    # is embedded, except a pure alias (0x40 with no keys of its own): retail
-    # leaves 0x20 off those, and with it on the client plays the empty
-    # embedded track (rest pose) instead of following alias_next.
+    # Every sequence we write is embedded, except a pure alias (0x40 with no
+    # keys of its own): retail leaves SEQ_EMBEDDED off those, and with it on
+    # the client plays the empty embedded track (rest pose) instead of
+    # following alias_next.
     if getattr(s, "pure_alias", False):
-        flags = (s.flags & ~0x20) & 0xFFFFFFFF
+        flags = (s.flags & ~embedded) & 0xFFFFFFFF
     else:
-        flags = (s.flags | 0x20) & 0xFFFFFFFF
+        flags = (s.flags | embedded) & 0xFFFFFFFF
     (bx0, by0, bz0), (bx1, by1, bz1), radius = getattr(s, "bounds", None) or bounds
     freq = int(getattr(s, "frequency", 0)) & 0xFFFF
     vnext = int(getattr(s, "variation_next", -1))
@@ -990,8 +1001,30 @@ def _skel_chunk(name, header_len, build):
     return name + struct.pack("<I", len(buf.b)) + bytes(buf.b)
 
 
-def write_skel(model):
-    """Serialize a ``.skel`` carrying the skeleton + animations (Legion+ form)."""
+def pack_pedc(rows, nseq):
+    """PEDC chunk body (allied races): ``rows[event][parent_seq]`` -> timestamps."""
+    n = len(rows)
+    outer_off = (16 + n * 12 + 3) & ~3
+    inner_off = outer_off + n * nseq * 8
+    entries, outers, inner = bytearray(), bytearray(), bytearray()
+    for e, row in enumerate(rows):
+        entries += struct.pack("<HhII", 0, -1, nseq, outer_off + e * nseq * 8)
+        for pi in range(nseq):
+            ts = row[pi] if pi < len(row) else []
+            if ts:
+                outers += struct.pack("<II", len(ts), inner_off + len(inner))
+                inner += struct.pack("<%dI" % len(ts), *ts)
+            else:
+                outers += struct.pack("<II", 0, 0)
+    return (struct.pack("<IIII", n, 16, 0, 0) + bytes(entries)
+            + b"\x00" * (outer_off - (16 + n * 12)) + bytes(outers) + bytes(inner))
+
+
+def write_skel(model, child=False):
+    """Serialize a ``.skel`` carrying the skeleton + animations (Legion+ form).
+
+    ``child`` (allied race): reuse the source's raw SKL1 and append its SKPD
+    (parent link) and BFID, so the client still inherits the parent's animations."""
     sanitize_bone_references(model, log=lambda m: print("[M2] skel: " + m, flush=True))
     link_animation_variations(model)
     ensure_events(model)
@@ -1007,7 +1040,7 @@ def write_skel(model):
     def b_sks1(buf):
         gl = model.global_loops
         gl_off = buf.append(struct.pack("<%dI" % len(gl), *gl)) if gl else 0
-        seq_off = buf.append(b"".join(_pack_sequence(s, seq_bounds) for s in model.sequences)) \
+        seq_off = buf.append(b"".join(_pack_sequence(s, seq_bounds, SKEL_EMBEDDED) for s in model.sequences)) \
             if model.sequences else 0
         sl = model.seq_lookup
         sl_off = buf.append(struct.pack("<%dH" % len(sl), *(v & 0xFFFF for v in sl))) if sl else 0
@@ -1044,10 +1077,20 @@ def write_skel(model):
         al_off = buf.append(struct.pack("<%dH" % len(al), *(v & 0xFFFF for v in al))) if al else 0
         return struct.pack("<II", len(att), att_off) + struct.pack("<II", len(al), al_off)
 
-    return (_skel_chunk(b"SKL1", 16, b_skl1)
-            + _skel_chunk(b"SKS1", 32, b_sks1)
-            + _skel_chunk(b"SKB1", 16, b_skb1)
-            + _skel_chunk(b"SKA1", 16, b_ska1))
+    raw = (getattr(model, "skel_chunks", None) or {}) if child else {}
+
+    def raw_chunk(name, body):
+        return name + struct.pack("<I", len(body)) + body
+
+    out = (raw_chunk(b"SKL1", raw["SKL1"]) if "SKL1" in raw
+           else _skel_chunk(b"SKL1", 16, b_skl1))
+    out += _skel_chunk(b"SKS1", 32, b_sks1)
+    out += _skel_chunk(b"SKB1", 16, b_skb1)
+    out += _skel_chunk(b"SKA1", 16, b_ska1)
+    for name in ("SKPD", "BFID"):
+        if name in raw:
+            out += raw_chunk(name.encode("ascii"), raw[name])
+    return out
 
 
 def hardcode_skin_texture(original_bytes, blp_id):

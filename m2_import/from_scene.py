@@ -16,6 +16,8 @@ from .scene_reader import geoset_id_from_name
 from . import names
 from . import anim_data
 from . import coords
+from . import action_fp
+import base64
 
 
 def _crc(name):
@@ -323,6 +325,12 @@ def _build_animation_multi(model, arm, ordered, idx, fps, mirror_x, meta):
         s.duration = max(extent, orig_dur)
         s.start_timestamp = 0
         s.end_timestamp = s.duration
+        # Allied races: where the clip came from, and whether an inherited clip
+        # was edited since import (decides what the child .skel must carry).
+        s.origin = str(action.get("m2_seq_origin", "own"))
+        s.parent_index = int(action.get("m2_seq_parent_index", -1))
+        fp = action.get("m2_seq_fingerprint")
+        s.edited = bool(fp) and action_fp.fingerprint(action) != str(fp)
         _apply_blend(s, action, meta_seqs[si] if si < len(meta_seqs) else None)
         _fix_degenerate_duration(s)
         sequences.append(s)
@@ -1737,6 +1745,10 @@ def build_model_from_scene(objects, fps=30, mirror_x=False, texture_file_id=0,
     _fill_movespeed(model)
     model.aux_chunks = {}
     model.skin_file_ids = []
+    # Allied race: the parent link, from the scene metadata or the re-read source.
+    model.parent_skel = (meta or {}).get("parent_skel") or getattr(source_model, "parent_skel", None)
+    sk = {k: base64.b64decode(v) for k, v in ((meta or {}).get("skel_chunks") or {}).items()}
+    model.skel_chunks = sk or dict(getattr(source_model, "skel_chunks", None) or {})
     print("[M2] from-scratch: %d sequences, %d attachments, %d textures, "
           "%d materials, %d batches, geosets %s"
           % (len(model.sequences), len(model.attachments), len(model.textures),

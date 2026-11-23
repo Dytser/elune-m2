@@ -79,7 +79,7 @@ class M2Sequence:
         "start_timestamp", "end_timestamp",
         "frequency", "variation_next", "alias_next",
         "movespeed", "blend_time_in", "blend_time_out", "bounds",
-        "pure_alias",
+        "pure_alias", "origin", "parent_index", "edited",
     )
 
     def __init__(self):
@@ -98,6 +98,12 @@ class M2Sequence:
         # True for an alias (flag 0x40) with no keys of its own: written
         # without 0x20 so the client follows alias_next, as retail does.
         self.pure_alias = False
+        # Allied races: "own" (plain), "override" (child replaces a parent
+        # sequence) or "parent" (inherited, played from the parent .skel).
+        # parent_index is the sequence index in the parent .skel, or -1.
+        self.origin = "own"
+        self.parent_index = -1
+        self.edited = False      # inherited clip whose keys changed since import
         self.movespeed = 0.0
         # Cross-fade (ms) into / out of this animation. 0 makes the client snap
         # between animations; retail uses 150 almost everywhere.
@@ -287,3 +293,8 @@ class M2Model:
         self.colors = []        # list[(color_track C3Vec, alpha_track fixed16)]
         self.weights = []       # list[weight_track fixed16]
         self.transforms = []    # list[(trans C3Vec, rot C4Quat, scale C3Vec)]
+        # Allied races (Legion+): the child .skel's SKPD points at a parent .skel
+        # whose animations are merged in on import. None when there is no parent.
+        self.parent_skel = None   # {"fid": int, "path": str, "nseq": int, "name": str}
+        self.skel_chunks = {}     # raw child SKL1 / SKPD / BFID bytes (for re-export)
+        self.parent_bounds = []   # PSBC: per parent sequence ((min), (max), radius)
